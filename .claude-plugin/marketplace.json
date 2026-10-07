@@ -1,0 +1,14 @@
+{
+  "name": "cc-hud",
+  "description": "cc-hud: an animated pixel-crab usage panel for Claude Code with quota-pace warnings",
+  "owner": {
+    "name": "kimyong6366"
+  },
+  "plugins": [
+    {
+      "name": "cc-hud",
+      "source": "./cc-hud",
+      "description": "A usage panel under the prompt (model/project/usage grid with quota-pace warnings, settings toolbar, English/Chinese UI, one-click handoff prompts) and a moody pixel crab walking above it with your subagents"
+    }
+  ]
+}

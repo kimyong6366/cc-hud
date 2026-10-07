@@ -1,0 +1,9 @@
+{
+  "name": "cc-hud-demo",
+  "private": true,
+  "type": "module",
+  "description": "Renders the README GIFs from the real cc-hud code (see README.md)",
+  "devDependencies": {
+    "typescript": "^5.9.0"
+  }
+}
