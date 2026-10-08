@@ -794,25 +794,36 @@ async function projectDir($: any): Promise<string> {
 
 // Windows: Claude Code 启动子进程时把窗口设成隐藏, 直接跑 explorer.exe 打开的文件夹窗口也会是隐藏的;
 // 经 cmd 的 start 转一手, 新窗口按正常方式显示 (已在本机验证). macOS 用 open, Linux 用 xdg-open
+// 用系统默认程序打开一个文件夹或文件; 系统按项目目录认 (路径有特殊字符时 Windows 改用 PowerShell)
+async function openPath($: any, target: string) {
+  const sys = await detectOS($, cwd || (await projectDir($)))
+  if (sys !== 'windows') return openPosix($, target, sys)
+  const p = target.replace(/\//g, '\\')
+  if (/^[^&^|<>()%!"]+$/.test(p)) {
+    await $.process.run(['cmd.exe', '/d', '/c', 'start', 'cc-hud', p], { timeoutMs: 10_000 })
+  } else {
+    const script = "Start-Process -FilePath '" + p.replace(/'/g, "''") + "'"
+    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', utf16Base64(script)], {
+      timeoutMs: 20_000,
+    })
+  }
+}
+
 async function openProject($: any) {
   if (!(await pressOk($, 'project'))) return
   try {
-    const here = cwd || (await projectDir($))
-    const sys = await detectOS($, here)
-    if (sys !== 'windows') {
-      await openPosix($, here, sys)
-    } else {
-      const dir = here.replace(/\//g, '\\')
-      if (/^[^&^|<>()%!"]+$/.test(dir)) {
-        await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', dir], { timeoutMs: 10_000 })
-      } else {
-        const script = "Start-Process -FilePath '" + dir.replace(/'/g, "''") + "'"
-        await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-EncodedCommand', utf16Base64(script)], {
-          timeoutMs: 20_000,
-        })
-      }
-    }
+    await openPath($, cwd || (await projectDir($)))
     $.ui.toast(S().toast.projectOpened)
+  } catch (err) {
+    $.ui.toast(S().toast.openFailed(String(err)))
+  }
+}
+
+// 客户端复制不了剪贴板时: 用默认程序打开刚存的交接文件
+async function openHandoffFile($: any) {
+  if (!lastHandoff || !(await pressOk($, 'handoff-open'))) return
+  try {
+    await openPath($, lastHandoff)
   } catch (err) {
     $.ui.toast(S().toast.openFailed(String(err)))
   }
@@ -826,7 +837,7 @@ async function runSlash($: any, command: string, fallbackUrl?: string) {
     if (fallbackUrl) {
       try {
         const sys = await detectOS($, cwd || (await projectDir($)))
-        if (sys === 'windows') await $.process.run(['cmd.exe', '/d', '/c', 'start', 'usage hud', fallbackUrl], { timeoutMs: 10_000 })
+        if (sys === 'windows') await $.process.run(['cmd.exe', '/d', '/c', 'start', 'cc-hud', fallbackUrl], { timeoutMs: 10_000 })
         else await openPosix($, fallbackUrl, sys)
       } catch {}
     } else {
@@ -1248,7 +1259,7 @@ async function buildDesktop($: any, els: any, cols: number, working: boolean) {
   const crabScale = 5
   const crabW = 16 * crabScale
   // 估计的可用宽度; 故意多画 5% + 20 像素, 让客户端总是把它等比缩到正好贴满卡片, 右边缘和卡片对齐
-  const est = Math.round((cols || 100) * DESKTOP_PX_PER_COL) - crabW - 15
+  const est = Math.round((cols || 100) * DESKTOP_PX_PER_COL) - (crabOn ? crabW + 15 : 0)
   const dashW = Math.max(340, Math.min(1040, Math.round(est * 1.05) + 20))
   const compact = layout === 'compact' || est < 380
   // 螃蟹直接画在卡片上 (没有底板/边框); 当普通图片显示, SMIL 动画照样会动, 必须给明确宽高
@@ -1280,15 +1291,61 @@ async function buildDesktop($: any, els: any, cols: number, working: boolean) {
   )
   const crabSize = compact ? { w: 48, h: 24 } : { w: crabW, h: 8 * crabScale }
   const dash = dashSvg(data, { compact, width: dashW })
+  // v1.1: 卡片上面一行是工具栏 (原生按钮 / 下拉框); 螃蟹设成关时卡片里只放仪表盘
   return (
-    <Box key="hud-d-row" flexDirection="row" alignItems="center" columnGap={2}>
-      <Box key="hud-d-crab" flexShrink={0}>
-        <Svg key="crab-svg" source={crab} alt={S().desk.crabAlt} width={crabSize.w} height={crabSize.h} />
-      </Box>
+    <Box key="hud-d" flexDirection="column" rowGap={1}>
+      {deskToolbar($, els, s.pct)}
+      <Box key="hud-d-row" flexDirection="row" alignItems="center" columnGap={2}>
+        {crabOn ? (
+          <Box key="hud-d-crab" flexShrink={0}>
+            <Svg key="crab-svg" source={crab} alt={S().desk.crabAlt} width={crabSize.w} height={crabSize.h} />
+          </Box>
+        ) : null}
       {/* 估计的宽度偏大时, 这个容器允许仪表盘等比缩小, 不会被截断 */}
-      <Box key="hud-d-dash" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
-        <Svg key="dash-svg" source={dash} alt={S().desk.dashAlt(String(data.ctx.pct ?? '--'), String(data.five.pct ?? '--'), String(data.week.pct ?? '--'))} />
+        <Box key="hud-d-dash" flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
+          <Svg key="dash-svg" source={dash} alt={S().desk.dashAlt(String(data.ctx.pct ?? '--'), String(data.five.pct ?? '--'), String(data.week.pct ?? '--'))} />
+        </Box>
       </Box>
+    </Box>
+  )
+}
+
+// ---------------- 客户端 (桌面 app) 的工具栏 (v1.1) ----------------
+// 卡片是两张 SVG 图, 点不了; 按钮放在卡片上面一行 (和终端版同一个位置), 用客户端的原生按钮 / 下拉框:
+//   [设置] [交接] ([打开交接文件])      点了设置: 后面接 语言 / 螃蟹 / 面板 三个下拉框 (精简时也在, 随时改回来)
+// 上下文 >= 85%: 交接用客户端的主按钮 (终端是橙色方括号); 写的时候不写秒数 (客户端面板约 15 秒才刷新一次)
+const cap1 = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
+function deskToolbar($: any, els: any, pct: number | undefined) {
+  const { Box, Button, Select } = els
+  const B = S().bar
+  const hot = !handoffBusy && (pct ?? 0) >= HANDOFF_AT
+  const items: any[] = [
+    <Button key="btn-settings" label={cap1(B.settings)} onPress={() => toggleSettings($)} />,
+    <Button
+      key="btn-handoff"
+      label={handoffBusy ? B.writingDesk : cap1(B.handoff)}
+      {...(hot ? { variant: 'primary' } : {})}
+      onPress={(press: any) => void startHandoff($, press?.surface ?? 'desktop')}
+    />,
+  ]
+  if (lastHandoff && !handoffBusy) items.push(<Button key="btn-handoff-open" label={B.openHandoff} onPress={() => void openHandoffFile($)} />)
+  if (settingsOpen) {
+    const opt = (value: string, label: string) => ({ value, label: cap1(label) })
+    items.push(
+      <Select key="sel-lang" label={B.lang} options={[opt('en', 'EN'), opt('zh', '中文')]} value={getLang()} onSelect={(v: string) => void setLangPref($, v === 'zh' ? 'zh' : 'en')} />,
+      <Select key="sel-crab" label={B.crab} options={[opt('on', B.on), opt('off', B.off)]} value={crabOn ? 'on' : 'off'} onSelect={(v: string) => void setCrab($, v !== 'off')} />,
+      <Select
+        key="sel-panel"
+        label={B.panel}
+        options={[opt('full', B.full), opt('compact', B.compact), opt('off', B.hide)]}
+        value={layout}
+        onSelect={(v: string) => void setLayout($, (LAYOUTS as readonly string[]).includes(v) ? (v as Layout) : 'full')}
+      />,
+    )
+  }
+  return (
+    <Box key="hud-d-bar" flexDirection="row" alignItems="center" columnGap={1}>
+      {items}
     </Box>
   )
 }
@@ -1423,9 +1480,17 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
         ],
       },
     ]
+    // v1.1: 一行版最前面也放 [设置] [交接] (最优先, 窄的时候先让用量条): 不然切到精简以后点不回来, 也交接不了;
+    //   点了 [设置], 三组选项排在下一行
+    const [sc, hc] = barChips($, els, pct, now)
+    const head: Seg = { key: 'seg-bar', w: sc.w + 1 + hc.w, prio: -1, parts: [...sc.parts, <Text key="bar-sp"> </Text>, ...hc.parts] }
+    const inner = W - HPAD * 2
     return (
-      <Box key="hud" flexDirection="row" columnGap={2} height={1} paddingLeft={HPAD} paddingRight={HPAD}>
-        {fit(segs, W - HPAD * 2, 2).map(s => cell(els, s.key, s.w, s.parts))}
+      <Box key="hud" flexDirection="column" paddingLeft={HPAD} paddingRight={HPAD}>
+        <Box key="hud-line" flexDirection="row" columnGap={2} height={1}>
+          {fit([head, ...segs], inner, 2).map(s => cell(els, s.key, s.w, s.parts))}
+        </Box>
+        {settingsOpen ? pieceRows(els, 'cg', settingsGroups($, els).map(p => ({ p, gap: 3 })), inner) : null}
       </Box>
     )
   }
@@ -1607,6 +1672,7 @@ let langPref: LangPref = 'auto' // store 里的 'lang' (没存 = auto)
 let settingsOpen = false // 设置那几组选项展开着 (不存 store, 新会话收起)
 let handoffBusy = false // 交接提示词正在写 (同一时间只写一份)
 let handoffAt = 0 // 开始写的时间 (按钮上显示已经写了多久)
+let lastHandoff = '' // 最近一次存好的交接文件 (客户端复制不了剪贴板: 工具栏多一个「打开交接文件」)
 let saidHandoff = false // 上下文到 HANDOFF_AT 时螃蟹问过一次 "要交接吗"
 
 type Piece = { w: number; parts: any[] }
@@ -1658,34 +1724,67 @@ function group(els: any, key: string, name: string, opts: Piece[]): Piece {
 function toolbarRows($: any, els: any, width: number, pct: number | undefined, now: number, fullscreen = true): any[] {
   const { Box, Text } = els
   const B = S().bar
+  const first = barChips($, els, pct, now)
+  // 排行: 两个按钮之间空 1 格, 各组之间空 3 格; 放不下就换行 (中等版一般是两行)
+  const items: Array<{ p: Piece; gap: number }> = first.map(p => ({ p, gap: 1 }))
+  if (!fullscreen) {
+    const room = width - first.reduce((w, p, i) => w + p.w + (i ? 1 : 0), 0) - 3
+    const hint = dw(B.clickHint) <= room ? B.clickHint : dw(B.clickHintShort) <= room ? B.clickHintShort : ''
+    if (hint)
+      items.push({
+        p: {
+          w: dw(hint),
+          parts: [
+            <Text key="tb-hint" color={DIM}>
+              {hint}
+            </Text>,
+          ],
+        },
+        gap: 3,
+      })
+  }
+  if (settingsOpen) for (const p of settingsGroups($, els)) items.push({ p, gap: 3 })
+  return pieceRows(els, 'tb', items, width)
+}
+
+// [设置] [交接] 两个按钮 (工具栏和一行版共用); 上下文 >= 85% 时 [交接] 的方括号变橙色
+function barChips($: any, els: any, pct: number | undefined, now: number): [Piece, Piece] {
+  const B = S().bar
   const hot = !handoffBusy && (pct ?? 0) >= HANDOFF_AT
   const hText = handoffBusy ? B.writing(dur(handoffAt ? Math.max(0, now - handoffAt) : 0)) : B.handoff
-  const first: Piece[] = [
+  return [
     chip(els, 'sb', 'btn-settings', B.settings, () => toggleSettings($), settingsOpen, settingsOpen),
     chip(els, 'hb', 'btn-handoff', hText, press => void startHandoff($, press?.surface), hot, handoffBusy),
   ]
-  const groups: Piece[] = settingsOpen
-    ? [
-        group(els, 'g-lang', B.lang, [
-          opt(els, 'opt-lang-en', 'EN', getLang() === 'en', () => void setLangPref($, 'en')),
-          opt(els, 'opt-lang-zh', '中文', getLang() === 'zh', () => void setLangPref($, 'zh')),
-        ]),
-        group(els, 'g-crab', B.crab, [
-          opt(els, 'opt-crab-on', B.on, crabOn, () => void setCrab($, true)),
-          opt(els, 'opt-crab-off', B.off, !crabOn, () => void setCrab($, false)),
-        ]),
-        group(els, 'g-panel', B.panel, [
-          opt(els, 'opt-panel-full', B.full, layout === 'full', () => void setLayout($, 'full')),
-          opt(els, 'opt-panel-compact', B.compact, layout === 'compact', () => void setLayout($, 'compact')),
-          opt(els, 'opt-panel-off', B.hide, layout === 'off', () => void setLayout($, 'off')),
-        ]),
-      ]
-    : []
-  // 排行: 两个按钮之间空 1 格, 各组之间空 3 格; 放不下就换行 (中等版一般是两行)
+}
+
+// 点了 [设置] 之后的三组选项 (工具栏和一行版共用)
+function settingsGroups($: any, els: any): Piece[] {
+  const B = S().bar
+  return [
+    group(els, 'g-lang', B.lang, [
+      opt(els, 'opt-lang-en', 'EN', getLang() === 'en', () => void setLangPref($, 'en')),
+      opt(els, 'opt-lang-zh', '中文', getLang() === 'zh', () => void setLangPref($, 'zh')),
+    ]),
+    group(els, 'g-crab', B.crab, [
+      opt(els, 'opt-crab-on', B.on, crabOn, () => void setCrab($, true)),
+      opt(els, 'opt-crab-off', B.off, !crabOn, () => void setCrab($, false)),
+    ]),
+    group(els, 'g-panel', B.panel, [
+      opt(els, 'opt-panel-full', B.full, layout === 'full', () => void setLayout($, 'full')),
+      opt(els, 'opt-panel-compact', B.compact, layout === 'compact', () => void setLayout($, 'compact')),
+      opt(els, 'opt-panel-off', B.hide, layout === 'off', () => void setLayout($, 'off')),
+    ]),
+  ]
+}
+
+// 一串小块排成几行 (行的 key: prefix + 第几行); gap = 和同一行前一块之间空几格, 放不下就换到下一行
+function pieceRows(els: any, prefix: string, items: Array<{ p: Piece; gap: number }>, width: number): any[] {
+  const { Box, Text } = els
   type Row = { w: number; items: Array<{ gap: number; p: Piece }> }
   let cur: Row = { w: 0, items: [] }
   const rows: Row[] = [cur]
-  const place = (p: Piece, gap: number) => {
+  for (const { p, gap } of items) {
     if (cur.items.length && cur.w + gap + p.w > width) {
       cur = { w: 0, items: [] }
       rows.push(cur)
@@ -1694,27 +1793,9 @@ function toolbarRows($: any, els: any, width: number, pct: number | undefined, n
     cur.items.push({ gap: g, p })
     cur.w += g + p.w
   }
-  for (const p of first) place(p, 1)
-  if (!fullscreen) {
-    const room = width - cur.w - 3
-    const hint = dw(B.clickHint) <= room ? B.clickHint : dw(B.clickHintShort) <= room ? B.clickHintShort : ''
-    if (hint)
-      place(
-        {
-          w: dw(hint),
-          parts: [
-            <Text key="tb-hint" color={DIM}>
-              {hint}
-            </Text>,
-          ],
-        },
-        3,
-      )
-  }
-  for (const p of groups) place(p, 3)
   return rows.map((r, i) => (
-    <Box key={'tb' + i} flexDirection="row" height={1}>
-      {r.items.flatMap((it, k) => [...(it.gap ? [<Text key={'tb' + i + '-g' + k}>{' '.repeat(it.gap)}</Text>] : []), ...it.p.parts])}
+    <Box key={prefix + i} flexDirection="row" height={1}>
+      {r.items.flatMap((it, k) => [...(it.gap ? [<Text key={prefix + i + '-g' + k}>{' '.repeat(it.gap)}</Text>] : []), ...it.p.parts])}
     </Box>
   ))
 }
@@ -1801,6 +1882,7 @@ async function runHandoff($: any, surface?: string) {
     const slug = (project || 'project').replace(/[^A-Za-z0-9._-]+/g, '-')
     path = base + sep + 'handoffs' + sep + slug + sep + day + '-' + hm + '.md'
     await $.fs.write(path, text)
+    lastHandoff = path
     const home = await homeDir($, sys)
     shown = home && path.startsWith(home) ? '~' + path.slice(home.length) : path
   } catch (err: any) {
@@ -1812,7 +1894,9 @@ async function runHandoff($: any, surface?: string) {
     copied = !!c?.isCopied
   } catch {}
   const chars = big(text.length)
-  $.ui.toast(copied && !saveErr ? H.done(chars, shown) : !saveErr ? H.noCopy(shown) : copied ? H.noSave(chars, saveErr) : H.lost(saveErr), { timeoutMs: 12_000 })
+  // 客户端目前复制不了剪贴板: 提示去点「打开交接文件」
+  const savedOnly = surface === 'desktop' ? H.savedDesk(shown) : H.noCopy(shown)
+  $.ui.toast(copied && !saveErr ? H.done(chars, shown) : !saveErr ? savedOnly : copied ? H.noSave(chars, saveErr) : H.lost(saveErr), { timeoutMs: 12_000 })
 }
 
 // ---------------- 螃蟹散步道: hooks 这边 (v0.16 起散步道本身在 Client 模块 walkway.tsx 里走) ----------------
@@ -2232,7 +2316,7 @@ export const register: Register = on => {
       await $.command.register({
         name: 'hud',
         description: S().cmd.description,
-        argumentHint: '[agents|crab|lang|handoff]',
+        argumentHint: '[full|compact|hide|agents|crab|lang|handoff]',
         immediate: true,
       })
     } catch (err) {
@@ -2282,7 +2366,9 @@ export const register: Register = on => {
     if (/^(top|above|up|上)/.test(arg) || /^(bottom|below|down|下)/.test(arg)) {
       return { text: C().fixed }
     }
-    layout = LAYOUTS[(LAYOUTS.indexOf(layout) + 1) % LAYOUTS.length]
+    // v1.1: 直接切到某个样子 (不用循环猜): /hud full | compact | hide, 中文 完整 / 精简 / 隐藏; 不带参数照旧循环
+    const pick: Layout | undefined = /^(full|完整)$/.test(arg) ? 'full' : /^(compact|精简)$/.test(arg) ? 'compact' : /^(hide|off|隐藏)$/.test(arg) ? 'off' : undefined
+    layout = pick ?? LAYOUTS[(LAYOUTS.indexOf(layout) + 1) % LAYOUTS.length]
     await $.store.set('layout', layout)
     redraw($)
     return { text: C().layout(C().layoutName[layout] ?? layout) }

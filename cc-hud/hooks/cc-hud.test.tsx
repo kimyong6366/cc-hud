@@ -202,7 +202,7 @@ test('点项目名经 cmd start 打开文件夹；双击只开一次；点本周
   await ui.press({ key: 'btn-project' })
   const opens = calls.run.filter(a => a[0] === 'cmd.exe')
   expect(opens.length).toBe(1)
-  expect(opens[0]).toEqual(['cmd.exe', '/d', '/c', 'start', 'usage hud', CWD])
+  expect(opens[0]).toEqual(['cmd.exe', '/d', '/c', 'start', 'cc-hud', CWD])
   await ui.press({ key: 'btn-wk' })
   expect(calls.cmd).toContain('usage')
   await ui.unmount()
@@ -333,7 +333,7 @@ test('Claude 在终端里 cd 进子目录后：项目名、分支、会话记录
   expect(all).toContain('my-app')
   expect(all.includes('research')).toBe(false)
   await ui.press({ key: 'btn-project' })
-  expect(calls.run.filter(a => a[0] === 'cmd.exe')).toEqual([['cmd.exe', '/d', '/c', 'start', 'usage hud', CWD]])
+  expect(calls.run.filter(a => a[0] === 'cmd.exe')).toEqual([['cmd.exe', '/d', '/c', 'start', 'cc-hud', CWD]])
   await ui.unmount()
 })
 
@@ -563,10 +563,13 @@ test('配速预警上面板: 会用完时 5小时 的百分比变红, 写红色 
   await noOld(mid)
   await mid.unmount()
   // 精简版: 只有 5小时 那个百分比是红的 (上下文 82% 不是)
-  const narrow = await mountHint($, 'terminal', 45)
+  //   v1.1: 一行版最前面多了 [设置] [交接], 45 列的终端放不下 5小时 那根条了: 在 100 列里切到精简来看
+  await $.command.run({ command: 'hud', args: 'compact' } as any)
+  const narrow = await mountHint($, 'terminal', 100)
   const pctTexts = (await narrow.findAll({ type: 'Text' })).filter((x: any) => /^\d+%$/.test(x.text.trim()) && x.props.color === '#f87171')
   expect(pctTexts.length).toBe(1)
   await narrow.unmount()
+  await $.command.run({ command: 'hud', args: 'full' } as any)
   // 用完还早 (2 小时后): 完整版 7 列放不下 "2h00m用完" -> 换粗一点的红色 "2h用完"; 中等版 11 列放得下
   usage = { ...USAGE, rateLimits: [lim('five_hour', 50, t + 3 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
   const late = await mountHint($, 'terminal', 140)
@@ -906,8 +909,11 @@ test('时间刻度: 5小时/本周 的条里正好一道亮色 │, 位置 = 已
   let usage: any = { ...USAGE }
   await start($, on, WIN, { usage: () => usage, now: () => t })
   const set = (...ls: any[]) => (usage = { ...USAGE, rateLimits: ls })
-  // 列数 = 旧版 (有螃蟹时) 的列数减 17, 格子几何不变; 48 列是精简版 (一行放不下本周, 只看 5小时)
-  for (const cols of [183, 123, 101, 88, 83, 73, 65, 48]) {
+  // 列数 = 旧版 (有螃蟹时) 的列数减 17, 格子几何不变; 最后一档在 80 列里切到精简 (一行版)
+  //   v1.1: 一行版最前面多了 [设置] [交接], 48 列的终端放不下 5小时 那根条了, 改在 80 列里看一行版的刻度
+  const widths = [[183, false], [123, false], [101, false], [88, false], [83, false], [73, false], [65, false], [80, true]] as const
+  for (const [cols, compact] of widths) {
+    if (compact) await $.command.run({ command: 'hud', args: 'compact' } as any)
     const seen: number[] = []
     // 5小时 已过 1h (0.2) -> 4h (0.8); 本周 已过 1 天 -> 6 天
     for (const [hrs, days] of [
@@ -917,7 +923,7 @@ test('时间刻度: 5小时/本周 的条里正好一道亮色 │, 位置 = 已
       set(lim('five_hour', 23.5, t + (5 - hrs) * H), lim('seven_day', 12, t + (7 - days) * 24 * H))
       const ui = await mountHint($, 'terminal', cols)
       const a = await tickOf(ui, 'h5')
-      expect(a.bw >= 3).toBe(true)
+      expect(a.bw >= 3 ? 'ok' : `${cols} 列${compact ? ' (精简)' : ''}: 5小时的条只有 ${a.bw} 格`).toBe('ok')
       expect(a.idx).toEqual([Math.min(a.bw - 1, Math.round((hrs / 5) * a.bw))])
       expect(a.cells[a.idx[0]].color).toBe('#e5e5e5')
       // 刻度替换那一格的 ━, 条的总格数不变
@@ -929,12 +935,13 @@ test('时间刻度: 5小时/本周 的条里正好一道亮色 │, 位置 = 已
       }
       // 负路径: 上下文那根没有刻度
       const c = await tickOf(ui, 'ctx')
-      expect(c.bw > 0 && c.idx.length === 0).toBe(true)
+      expect(c.bw > 0 && c.idx.length === 0 ? 'ok' : `${cols} 列${compact ? ' (精简)' : ''}: 上下文的条 ${c.bw} 格, 刻度 ${c.idx}`).toBe('ok')
       for (const s of await strings(ui)) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
       seen.push(a.idx[0])
       await ui.unmount()
     }
     expect(seen[1] > seen[0] ? 'ok' : `${cols} 列: 刻度没有右移 ${seen}`).toBe('ok')
+    if (compact) await $.command.run({ command: 'hud', args: 'full' } as any)
   }
   // 刻度在彩色段里 (用量超过时间) 和暗色段里 (用量落后) 都是同一种亮色; 123 列 (旧版 140 列) 5小时 的条 17 格
   // 百分比有滚动过渡: 多画几次, 等 5小时 的数字停到目标值再看彩色段
@@ -983,12 +990,14 @@ test('时间刻度: 5小时/本周 的条里正好一道亮色 │, 位置 = 已
   await empty.unmount()
   // 负路径: 没有重置时间 -> 不画刻度
   set({ kind: 'five_hour', percentUsed: 40 }, lim('seven_day', 12, t + 3 * 24 * H))
-  for (const cols of [123, 65, 48]) {
+  for (const [cols, compact] of [[123, false], [65, false], [80, true]] as const) {
+    if (compact) await $.command.run({ command: 'hud', args: 'compact' } as any)
     const none = await mountHint($, 'terminal', cols)
     const nh = await tickOf(none, 'h5')
-    expect(nh.bw > 0 && nh.idx.length === 0).toBe(true)
+    expect(nh.bw > 0 && nh.idx.length === 0 ? 'ok' : `${cols} 列${compact ? ' (精简)' : ''}: 5小时的条 ${nh.bw} 格, 刻度 ${nh.idx}`).toBe('ok')
     if (cols >= 51) expect((await tickOf(none, 'wk')).idx.length).toBe(1)
     await none.unmount()
+    if (compact) await $.command.run({ command: 'hud', args: 'full' } as any)
   }
 })
 
@@ -2129,7 +2138,7 @@ test('desktop card reads in English too', async ($, on) => {
 // ---- the toolbar ----
 const btn = async (ui: any, key: string) => (await ui.find({ type: 'Button', key })) as any
 
-test('toolbar: [settings] and [handoff] sit above the grid in the full and mid layouts, and not in the one-line layout', async ($, on) => {
+test('toolbar: [settings] and [handoff] sit above the grid in the full and mid layouts, and at the front of the one-line layout', async ($, on) => {
   await start($, on, WIN, EN)
   for (const cols of [140, 65]) {
     const ui = await mountHint($, 'terminal', cols)
@@ -2140,9 +2149,10 @@ test('toolbar: [settings] and [handoff] sit above the grid in the full and mid l
     expect(info.children.map((c: any) => c.props?.key)).toEqual(['tb0', 'r1', 'r2', 'r3']) // toolbar first, then the grid
     await ui.unmount()
   }
+  // v1.1: 一行版最前面也有 [settings] [handoff] (不然切到精简以后点不回来, 也交接不了)
   const one = await mountHint($, 'terminal', 45)
-  expect(await btn(one, 'btn-settings')).toBeUndefined()
-  expect(await btn(one, 'btn-handoff')).toBeUndefined()
+  expect((await btn(one, 'btn-settings'))?.props.label).toBe('settings')
+  expect((await btn(one, 'btn-handoff'))?.props.label).toBe('handoff')
   await one.unmount()
 })
 
@@ -2172,7 +2182,7 @@ test('settings: open shows Lang / Crab / Panel; 中文 switches the panel and to
   await ui.unmount()
 })
 
-test('settings: Crab off hides the crab strip; Panel compact switches to the one-line layout (no toolbar there)', async ($, on) => {
+test('settings: Crab off hides the crab strip; Panel compact switches to the one-line layout ([settings] [handoff] stay at the front)', async ($, on) => {
   await start($, on, WIN, EN)
   let ui = await mountHint($, 'terminal', 140)
   await ui.press({ key: 'btn-settings' })
@@ -2187,7 +2197,8 @@ test('settings: Crab off hides the crab strip; Panel compact switches to the one
   await ui.press({ key: 'opt-panel-compact' })
   await ui.unmount()
   ui = await mountHint($, 'terminal', 140)
-  expect(await btn(ui, 'btn-settings')).toBeUndefined()
+  expect((await btn(ui, 'btn-settings'))?.props.label).toBe('settings')
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('handoff')
   expect((await ui.findAll({ type: 'Box' })).some((b: any) => /^r\dc\d$/.test(b.key ?? ''))).toBe(false)
   await ui.unmount()
 })
@@ -2932,4 +2943,175 @@ test('panic on the desktop: the claws flail through a half-raised pose, sweat is
   expect(svg).toMatch(/fill="#60a5fa"[^>]*>(<animate[^>]*>)*<animate attributeName="y" values="-1;-2;-2/) // 汗珠往顶上甩
   expect(svg).not.toContain('values="-1 0;1 0"') // 眼睛不再左右抖
   expect(svg).toContain('#ef4444')
+})
+
+// ================= v1.1: desktop toolbar (Settings / Handoff as native buttons above the card) =================
+const sel = async (ui: any, key: string) => (await ui.find({ type: 'Select', key })) as any
+const svgCount = async (ui: any) => ((await ui.findAll({ type: 'Svg' })) as any[]).length
+const dashOf = async (ui: any) => {
+  const all: any[] = await ui.findAll({ type: 'Svg' })
+  return String(all[all.length - 1]?.props.source ?? '')
+}
+
+test('desktop toolbar: Settings and Handoff are native buttons above the crab and the dashboard; Settings opens three dropdowns', async ($, on) => {
+  await start($, on, WIN, EN)
+  const ui = await mountDesktop($, 120)
+  expect((await btn(ui, 'btn-settings'))?.props.label).toBe('Settings')
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('Handoff')
+  // 原生按钮: 不加 plain (终端那套方括号只在终端画)
+  expect((await btn(ui, 'btn-handoff'))?.props.plain).toBeUndefined()
+  // 工具栏那一行在卡片 (两张 SVG) 上面
+  const tree = JSON.stringify(await ui.drawn())
+  expect(tree.indexOf('btn-settings') >= 0 && tree.indexOf('btn-settings') < tree.indexOf('<svg')).toBe(true)
+  expect(await svgCount(ui)).toBe(2)
+  expect(await sel(ui, 'sel-lang')).toBeUndefined()
+  await ui.press({ key: 'btn-settings' })
+  expect((await sel(ui, 'sel-lang'))?.props.value).toBe('en')
+  expect((await sel(ui, 'sel-crab'))?.props.value).toBe('on')
+  expect((await sel(ui, 'sel-panel'))?.props.value).toBe('full')
+  expect((await sel(ui, 'sel-lang'))?.props.options.map((o: any) => o.value)).toEqual(['en', 'zh'])
+  expect((await sel(ui, 'sel-crab'))?.props.options.map((o: any) => o.value)).toEqual(['on', 'off'])
+  expect((await sel(ui, 'sel-panel'))?.props.options.map((o: any) => o.value)).toEqual(['full', 'compact', 'off'])
+  expect((await sel(ui, 'sel-lang'))?.props.label).toBe('Lang')
+  await ui.press({ key: 'btn-settings' })
+  expect(await sel(ui, 'sel-lang')).toBeUndefined()
+  await ui.unmount()
+})
+
+test('desktop toolbar: the dropdowns switch the language, hide the crab and pick the compact card', async ($, on) => {
+  await start($, on, WIN, EN)
+  const ui = await mountDesktop($, 120)
+  await ui.press({ key: 'btn-settings' })
+  await ui.select({ key: 'sel-lang', value: 'zh' })
+  expect((await btn(ui, 'btn-settings'))?.props.label).toBe('设置')
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('交接')
+  expect((await sel(ui, 'sel-lang'))?.props.value).toBe('zh')
+  // 螃蟹 关: 卡片里只剩仪表盘
+  await ui.select({ key: 'sel-crab', value: 'off' })
+  expect(await svgCount(ui)).toBe(1)
+  expect((await sel(ui, 'sel-crab'))?.props.value).toBe('off')
+  await ui.select({ key: 'sel-crab', value: 'on' })
+  expect(await svgCount(ui)).toBe(2)
+  // 面板 精简: 仪表盘换成一行的样子
+  const full = await dashOf(ui)
+  await ui.select({ key: 'sel-panel', value: 'compact' })
+  expect((await sel(ui, 'sel-panel'))?.props.value).toBe('compact')
+  expect((await dashOf(ui)) !== full).toBe(true)
+  expect(await dashOf(ui)).toContain('height="22"')
+  await ui.unmount()
+})
+
+test('desktop toolbar: at 85% context Handoff becomes the primary button', async ($, on) => {
+  let pct = 60
+  await start($, on, WIN, { ...EN, usage: () => ({ ...USAGE, context: { ...USAGE.context, percent: pct } }) })
+  let ui = await mountDesktop($, 120)
+  expect((await btn(ui, 'btn-handoff'))?.props.variant).toBeUndefined()
+  await ui.unmount()
+  pct = 86
+  ui = await mountDesktop($, 120)
+  expect((await btn(ui, 'btn-handoff'))?.props.variant).toBe('primary')
+  await ui.unmount()
+})
+
+test('desktop handoff: "Writing handoff…" without seconds, then saved; the toast says the app cannot copy yet, and Open handoff file opens it', async ($, on) => {
+  let clk: any
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0, copyOk: false, fork: async () => (await clk.sleep(20_000), { isAnswered: true, text: 'BODY', usage: {} }) })
+  clk = calls.clock
+  let ui = await mountDesktop($, 120)
+  expect(await btn(ui, 'btn-handoff-open')).toBeUndefined()
+  await ui.press({ key: 'btn-handoff' })
+  await ui.unmount()
+  await clk.advance(8000)
+  ui = await mountDesktop($, 120)
+  // 客户端里面板大约 15 秒才刷新一次: 不显示秒数
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('Writing handoff…')
+  await ui.unmount()
+  await clk.advance(12_000)
+  await clk.settle()
+  expect(calls.writes.length).toBe(1)
+  const toast = calls.toasts.find(t => t.startsWith('Handoff saved to'))
+  expect(toast).toBeDefined()
+  expect(toast).toMatch(/can't copy yet/)
+  ui = await mountDesktop($, 120)
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('Handoff')
+  expect((await btn(ui, 'btn-handoff-open'))?.props.label).toBe('Open handoff file')
+  const before = calls.run.length
+  await ui.press({ key: 'btn-handoff-open' })
+  const opened = calls.run.slice(before).find(a => /\.md$/.test(String(a[a.length - 1])))
+  expect(opened?.slice(0, 5)).toEqual(['cmd.exe', '/d', '/c', 'start', 'cc-hud'])
+  // 测试引擎会把写文件的 C:\ 路径规整成本机写法: 打开的是原来的 Windows 路径, 只比结尾
+  const target = String(opened?.[opened.length - 1])
+  expect(target).toMatch(/^C:\\Users\\me\\\.claude\\handoffs\\my-app\\\d{4}-\d\d-\d\d-\d{4}\.md$/)
+  expect(String(calls.writes[0]?.path).endsWith(target)).toBe(true)
+  await ui.unmount()
+  // 终端的工具栏不加这个按钮 (终端复制得了)
+  const term = await mountHint($, 'terminal', 140)
+  expect(await btn(term, 'btn-handoff-open')).toBeUndefined()
+  await term.unmount()
+})
+
+// ================= v1.1: the one-line (compact) panel can be switched back =================
+test('compact panel: the one line starts with [settings]; it opens the options on the line below, and Panel full brings the full panel back', async ($, on) => {
+  await start($, on, WIN, EN)
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-settings' })
+  await ui.press({ key: 'opt-panel-compact' })
+  // 精简: 一行, 最前面是 [settings] [handoff]; 设置还开着, 选项排在下一行
+  const grid = async () => (await ui.findAll({ type: 'Box' })).some((b: any) => /^r\dc\d$/.test(b.key ?? ''))
+  expect((await btn(ui, 'btn-settings'))?.props.label).toBe('settings')
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('handoff')
+  expect(await grid()).toBe(false)
+  expect(await btn(ui, 'opt-panel-full')).toBeDefined()
+  expect(await btn(ui, 'opt-lang-zh')).toBeDefined()
+  await ui.press({ key: 'btn-settings' })
+  expect(await btn(ui, 'opt-panel-full')).toBeUndefined()
+  await ui.press({ key: 'btn-settings' })
+  await ui.press({ key: 'opt-panel-full' })
+  // 回到完整版: 三行网格回来了
+  expect(await grid()).toBe(true)
+  expect(await btn(ui, 'btn-handoff')).toBeDefined()
+  await ui.unmount()
+})
+
+test('compact panel: [settings] fits even in a 45-column terminal, and its options wrap inside the panel width', async ($, on) => {
+  await start($, on, WIN, EN)
+  const ui = await mountHint($, 'terminal', 45)
+  await ui.press({ key: 'btn-settings' })
+  for (const key of ['opt-lang-en', 'opt-lang-zh', 'opt-crab-on', 'opt-crab-off', 'opt-panel-full', 'opt-panel-compact', 'opt-panel-off']) expect((await btn(ui, key)) ? 'ok' : 'missing ' + key).toBe('ok')
+  // 一行版那一行 + 选项排出来的几行, 每行都不超过面板里面的宽度 (45 列终端: 面板 43 列, 左右各空 2 列)
+  const hud: any = await ui.find({ type: 'Box', key: 'hud' })
+  const flat = (n: any): string => (typeof n === 'string' ? n : n?.props?.label ?? (n?.children ?? []).map(flat).join(''))
+  const rows = hud.children.filter((c: any) => /^(hud-line|cg\d)$/.test(c.props?.key ?? ''))
+  expect(rows.length >= 2).toBe(true)
+  for (const row of rows) expect(dwT(flat(row)) <= 39 ? 'ok' : 'too wide: ' + flat(row)).toBe('ok')
+  await ui.unmount()
+})
+
+test('/hud full, /hud compact and /hud hide (also 完整 / 精简 / 隐藏) switch the panel directly; /hud alone still cycles', async ($, on) => {
+  await start($, on, WIN, EN)
+  const run = async (args: string) => String(((await $.command.run({ command: 'hud', args } as any)) as any)?.text ?? '')
+  const shape = async () => {
+    const ui = await mountHint($, 'terminal', 140)
+    const grid = (await ui.findAll({ type: 'Box' })).some((b: any) => /^r\dc\d$/.test(b.key ?? ''))
+    const r = grid ? 'full' : (await btn(ui, 'btn-settings')) ? 'compact' : 'off'
+    await ui.unmount()
+    return r
+  }
+  expect(await run('compact')).toMatch(/compact/)
+  expect(await shape()).toBe('compact')
+  expect(await run('full')).toMatch(/full/)
+  expect(await shape()).toBe('full')
+  await run('隐藏')
+  expect(await shape()).toBe('off')
+  await run('完整')
+  expect(await shape()).toBe('full')
+  await run('精简')
+  expect(await shape()).toBe('compact')
+  await run('hide')
+  expect(await shape()).toBe('off')
+  // 不带参数: 照旧按 完整 -> 精简 -> 隐藏 循环
+  await run('')
+  expect(await shape()).toBe('full')
+  await run('')
+  expect(await shape()).toBe('compact')
 })

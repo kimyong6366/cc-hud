@@ -52,7 +52,7 @@ You don't have to do anything: the panel and the crab update on their own while 
 | See what your subagents and workflow agents are doing | `+N agents` in the Status cell | `/hud agents` |
 | Switch language | `[settings]` → `Lang` | `/hud lang en`, `/hud lang zh`, `/hud lang auto` |
 | Hide or show the crab | `[settings]` → `Crab` | `/hud crab off`, `/hud crab on` |
-| Make the panel smaller or hide it | `[settings]` → `Panel` | `/hud` (cycles full → one line → hidden) |
+| Make the panel smaller or hide it | `[settings]` → `Panel` (the one-line panel keeps `[settings] [handoff]` at the front, so you can switch back) | `/hud full`, `/hud compact`, `/hud hide`, or `/hud` to cycle |
 | Compact the conversation | `compact` in the Context cell (shows up at 75%) | `/compact` |
 | Change model or effort | the model name or the effort word | `/model`, `/effort` |
 | See the quota details | the 5h or Week label | `/usage` |
@@ -183,6 +183,13 @@ In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) ab
 - claws pass through a half-raised pose, and blinks go half-closed first
 - a finished turn makes it really hop twice, and a sent message makes it jump
 - red fades in over a second, and pulses smoothly at 95%
+
+**Buttons in the desktop app.** Above the card sit the app's own native buttons:
+- **Settings** opens three dropdowns: Lang, Crab and Panel.
+- **Handoff** writes a handoff prompt. It turns into the app's primary button once context reaches 85%, and shows "Writing handoff…" while Claude writes.
+- The desktop app can't copy to the clipboard from a mod yet, so the handoff is saved to a file and an **Open handoff file** button opens it in your default editor.
+
+Clicks work in the desktop app without any extra setting.
 
 To see every move without the desktop app, run `node tools/preview-client.mjs` and open `tools/out/client.html` in a browser.
 

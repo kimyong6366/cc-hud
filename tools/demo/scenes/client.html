@@ -24,6 +24,17 @@
   .card .dash svg { display: block; max-width: 100%; height: auto; }
   .input { position: absolute; left: 0; border: 1px solid #444; border-radius: 12px; box-sizing: border-box; padding: 0 14px; color: #77776f; font-size: 14px; display: flex; align-items: center; }
   .input .send { margin-left: auto; width: 26px; height: 26px; border-radius: 8px; background: #d97757; display: flex; align-items: center; justify-content: center; }
+  /* 工具栏: 客户端自己画原生按钮 / 下拉框; 这里照它的深色界面近似画 */
+  .bar { position: absolute; left: 0; display: flex; align-items: center; gap: 8px; height: 28px; font: 13px "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif; }
+  .nb { display: inline-flex; align-items: center; height: 28px; padding: 0 12px; border-radius: 8px; box-sizing: border-box; white-space: nowrap; background: #353533; color: #ececea; border: 1px solid #4a4a46; }
+  .nb.primary { background: #d97757; border-color: #d97757; color: #1c1917; font-weight: 600; }
+  .nb.hover { background: #43433f; }
+  .nb.primary.hover { background: #e3906f; border-color: #e3906f; }
+  .nb.down { transform: scale(0.95); }
+  .ns-l { display: inline-flex; align-items: center; gap: 8px; color: #9a9a95; white-space: nowrap; }
+  .ns { display: inline-flex; align-items: center; gap: 10px; height: 28px; padding: 0 10px; border-radius: 8px; box-sizing: border-box; background: #2a2a28; border: 1px solid #4a4a46; color: #ececea; }
+  .ns i { font-style: normal; font-size: 10px; color: #9a9a95; }
+  .bar .sp { width: 10px; }
 </style>
 </head>
 <body>
@@ -31,7 +42,7 @@
 // 客户端 (桌面 App) 版动图: 螃蟹和仪表盘是 record.mjs 用真代码 (buildDesktop -> crabSvg / dashSvg) 录下来的 SVG
 // (out/rec/client.<lang>.json, 每帧一个编号 + 这张图换上的时刻); 这里只画聊天界面、标题, 按时间播 SVG 里的 SMIL 动画
 // 剧本 (时间、对话文字) 在 client.story.js, 和录制器共用; ?lang=en|zh
-import { makeStage, seg, easeOut, typed } from '../lib/stage.js'
+import { makeStage, makePointer, makeToast, toastK, pathAt, seg, easeOut, typed } from '../lib/stage.js'
 import * as S from './client.story.js'
 
 const lang = new URLSearchParams(location.search).get('lang') === 'zh' ? 'zh' : 'en'
@@ -39,7 +50,7 @@ const T = S.TEXT[lang]
 const rec = await (await fetch('../out/rec/client.' + lang + '.json', { cache: 'no-store' })).json()
 const frameAt = t => rec.frames[Math.min(rec.frames.length - 1, Math.max(0, Math.round(t * S.FPS)))]
 
-const W = 1200, H = 556
+const W = 1200, H = 604
 const { FPS, DURATION } = S
 
 // 卡片宽度: 照 register.tsx 的 buildDesktop (横栏 COLS 格, 每格约 7.35 像素)
@@ -48,7 +59,7 @@ const contentW = Math.round(S.COLS * PX_PER_COL)
 
 // ---------------- 舞台 ----------------
 makeStage(W, H)
-const AW = 1060, AH = 442
+const AW = 1060, AH = 490
 const AX = (W - AW) / 2, AY = 74
 const COLW = contentW + 36
 const colX = (AW - COLW) / 2
@@ -67,11 +78,12 @@ function buildApp(z) {
       </div></div>
     <div class="col" style="left:${colX}px;top:38px;width:${COLW}px;height:${AH - 38}px">
       <div class="msgs"></div>
+      <div class="bar"></div>
       <div class="card" style="width:${contentW}px"><div class="row"><div class="crab"></div><div class="dash"></div></div></div>
       <div class="input" style="width:${COLW}px;height:52px"><span></span><div class="send"><svg width="12" height="12" viewBox="0 0 12 12"><path d="M6 10V2M2.5 5.5 6 2l3.5 3.5" stroke="#1c1917" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></div></div>
     </div>`
   document.body.appendChild(app)
-  return { app, msgs: app.querySelector('.msgs'), card: app.querySelector('.card'), crab: app.querySelector('.crab'), dash: app.querySelector('.dash'), input: app.querySelector('.input'), crabId: -1, dashId: -1 }
+  return { app, msgs: app.querySelector('.msgs'), bar: app.querySelector('.bar'), card: app.querySelector('.card'), crab: app.querySelector('.crab'), dash: app.querySelector('.dash'), input: app.querySelector('.input'), crabId: -1, dashId: -1, barHtml: '' }
 }
 const main = buildApp(1)
 const fade = buildApp(2)
@@ -89,7 +101,29 @@ function showSvg(el, id, since, t, v, key) {
   }
 }
 
-function draw(v, t) {
+// 工具栏: 录下来的按钮 / 下拉框按顺序画; 指针停在哪个按钮上就画成悬停, 按下的那一下缩一点
+function drawBar(v, items, hover, down) {
+  let prev = ''
+  const html = items
+    .map(it => {
+      const gap = it.t === 's' && prev === 'b' ? '<span class="sp"></span>' : ''
+      prev = it.t
+      if (it.t === 's') return `${gap}<span class="ns-l">${esc(it.l)}<span class="ns">${esc(it.val)}<i>▼</i></span></span>`
+      const cls = ['nb', it.v === 'primary' ? 'primary' : '', it.k === hover ? 'hover' : '', it.k === down ? 'down' : ''].filter(Boolean).join(' ')
+      return `<span class="${cls}" data-k="${esc(it.k)}">${esc(it.l)}</span>`
+    })
+    .join('')
+  if (v.barHtml !== html) {
+    v.bar.innerHTML = html
+    v.barHtml = html
+  }
+}
+
+// 鼠标: 剧本里的每一趟 (进场 -> 停在按钮上 -> 按下 -> 离开)
+const tripAt = t => S.TRIPS.find(x => t >= x.inAt && t < x.goneAt)
+const downAt = (trip, t) => (trip && trip.clicks.some(c => Math.abs(t - c) < 0.06) ? trip.key : '')
+
+function draw(v, t, live = false) {
   // 消息
   const parts = []
   let y = 22
@@ -110,14 +144,45 @@ function draw(v, t) {
   const cardH = v.card.offsetHeight
   const inputTop = AH - 38 - 52 - 22
   v.input.style.top = inputTop + 'px'
-  v.card.style.top = inputTop - 12 - cardH + 'px'
-  // 螃蟹 / 仪表盘: 录下来的真 SVG
+  const cardTop = inputTop - 12 - cardH
+  v.card.style.top = cardTop + 'px'
+  v.bar.style.top = cardTop - 10 - 28 + 'px'
+  // 螃蟹 / 仪表盘: 录下来的真 SVG; 上面一行是录下来的工具栏
   const f = frameAt(t)
+  const trip = live ? tripAt(t) : undefined
+  drawBar(v, f.bar ?? [], trip && t >= trip.arriveAt && t < trip.leaveAt ? trip.key : '', downAt(trip, t))
   showSvg(v.crab, f.c, f.cs, t, v, 'crabId')
   showSvg(v.dash, f.d, f.ds, t, v, 'dashId')
   const typing = t >= S.TYPE_AT && t < S.ENTER
   v.input.firstChild.textContent = typing ? typed(T.prompt, t, S.TYPE_AT, (S.TYPE_END - S.TYPE_AT) / [...T.prompt].length) : T.placeholder
   v.input.style.color = typing ? '#ececea' : '#77776f'
+}
+
+// 指针和提示条 (提示条的样子是示意: 客户端怎么画 toast 没有公开)
+const pointer = makePointer()
+const toast = makeToast(main.app, 18, 50, 560)
+const P_FROM = [AX + AW - 140, AY + AH - 40]
+function target(key) {
+  const el = main.bar.querySelector(`[data-k="${key}"]`)
+  if (!el) return P_FROM
+  const r = el.getBoundingClientRect()
+  return [r.left + Math.min(r.width / 2, 34), r.top + r.height * 0.62]
+}
+const aim = {} // 每一趟的目标位置 (第一次看到按钮时量好; 按钮字变长也不跟着挪)
+function drawPointer(t) {
+  const trip = tripAt(t)
+  if (!trip) {
+    pointer.set(0, 0, false)
+    pointer.ripple(0, 0, null)
+    return
+  }
+  const [bx, by] = (aim[trip.key + trip.inAt] ??= target(trip.key))
+  const [x, y] = pathAt([[trip.inAt, ...P_FROM], [trip.arriveAt, bx, by], [trip.leaveAt, bx, by], [trip.goneAt, ...P_FROM]], t)
+  const alpha = Math.min(seg(t, trip.inAt, trip.inAt + 0.3), 1 - seg(t, trip.goneAt - 0.3, trip.goneAt))
+  pointer.set(x, y, true, !!downAt(trip, t), alpha)
+  const last = [...trip.clicks].reverse().find(c => t >= c)
+  const rk = last === undefined ? 0 : seg(t, last, last + 0.55)
+  pointer.ripple(x, y, rk > 0 && rk < 1 ? rk : null)
 }
 
 // 标题
@@ -133,10 +198,13 @@ window.demo = {
   height: H,
   fps: FPS,
   duration: DURATION,
-  check: [0.6, 1.4, 2.2, 4.5, 7.0, 9.0, 10.8, 12.8], // 抽查用的时刻 (秒)
+  check: [0.5, 1.5, 4.3, 7.0, 11.5, 13.6, 15.5, 17.6, 19.4], // 抽查用的时刻 (秒)
   ready: document.fonts.ready,
   renderFrame(t) {
-    draw(main, t)
+    draw(main, t, true)
+    drawPointer(t)
+    const f = frameAt(t)
+    toast.set(f.toast?.text ?? '', f.toast ? toastK(t, f.toast.at, Math.min(f.toast.ms / 1000, 30)) : null)
     const k = easeOut(seg(t, S.FADE_AT, DURATION - 1 / FPS))
     fade.app.style.display = k > 0 ? 'block' : 'none'
     fade.app.style.opacity = k

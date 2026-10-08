@@ -166,10 +166,12 @@ export function canvasLayer(parent, left, top, w, h, z = 5) {
 }
 
 // 终端右上角的提示条 (toast); 样子是示意: 引擎在终端里怎么画 toast 没有公开
-export function makeToast(parent, right, top) {
+// maxWidth: 给了就在这个宽度里换行 (默认一行)
+export function makeToast(parent, right, top, maxWidth = 0) {
   const el = document.createElement('div')
+  const wrap = maxWidth ? `white-space:normal;max-width:${maxWidth}px;line-height:1.45;` : 'white-space:nowrap;'
   el.style.cssText = `position:absolute;right:${right}px;top:${top}px;z-index:40;display:none;align-items:center;gap:9px;padding:7px 13px 7px 11px;border-radius:8px;
-    background:#1d1d1f;border:1px solid #4a4a4f;box-shadow:0 8px 22px rgba(0,0,0,0.5);font:13px "Cascadia Mono","Microsoft YaHei",monospace;color:#e4e4e7;white-space:nowrap;`
+    background:#1d1d1f;border:1px solid #4a4a4f;box-shadow:0 8px 22px rgba(0,0,0,0.5);font:13px "Cascadia Mono","Microsoft YaHei",monospace;color:#e4e4e7;${wrap}`
   el.innerHTML = '<span style="width:3px;align-self:stretch;border-radius:2px;background:#d97757"></span><span class="tx"></span>'
   parent.appendChild(el)
   return {

@@ -172,7 +172,8 @@ const H = {
     return { isPlaced: true }
   },
   'ui.close': () => void (pane.open = false),
-  'ui.copy': () => ({ isCopied: true }),
+  // 客户端 (远程界面) 目前还不能让 mod 复制到剪贴板 (接口文档: "a remote surface has no path yet"); 终端照常能复制
+  'ui.copy': o => ({ isCopied: o?.surface !== 'desktop' }),
   'ui.invalidate': () => undefined,
   'ui.log': () => undefined,
   'ui.status': () => undefined,
@@ -419,7 +420,7 @@ const press = key => {
     errors.push('no button ' + key)
     return
   }
-  return fn({ surface: 'terminal' })
+  return fn({ surface: DESKTOP ? 'desktop' : 'terminal' })
 }
 const working = () => NOW >= at(S.TURN_START) && NOW < at(S.COMPLETE)
 const tuid = i => 'toolu_' + String(i).padStart(4, '0')
@@ -485,7 +486,9 @@ if (S.AGENTS) {
   schedule(S.AGENTS.clickAt, () => press('btn-agents'))
   schedule(S.AGENTS.closeAt, () => void (pane.open = false))
 }
-if (S.HANDOFF) schedule(S.HANDOFF.clickAt, () => press('btn-handoff'))
+if (S.HANDOFF?.clickAt !== undefined) schedule(S.HANDOFF.clickAt, () => press('btn-handoff'))
+// 客户端版的鼠标: 每一趟在 clicks 这几个时刻按下这个按钮
+for (const trip of S.TRIPS ?? []) for (const c of trip.clicks) schedule(c, () => press(trip.key))
 
 // ---------------- 跑 ----------------
 const VIEW = { columns: S.COLS, rows: S.ROWS ?? 30, isFullscreen: true }
@@ -511,6 +514,25 @@ const idOf = s => {
   return svgIdx.get(s)
 }
 const shown = { crab: { id: -1, since: 0 }, dash: { id: -1, since: 0 } }
+// 客户端的工具栏: 按顺序记下原生按钮 (key / 文字 / 主按钮) 和下拉框 (key / 标签 / 选中的那项), 顺便收集按钮的 onPress
+function deskBar(tree) {
+  const items = []
+  const onPress = {}
+  const walk = n => {
+    if (!n || typeof n !== 'object') return
+    if (Array.isArray(n)) return n.forEach(walk)
+    const p = n.props ?? {}
+    if (n.type === 'Button') {
+      items.push({ t: 'b', k: p.key, l: String(p.label ?? ''), ...(p.variant ? { v: p.variant } : {}) })
+      if (p.onPress) onPress[p.key] = p.onPress
+    } else if (n.type === 'Select') {
+      const o = (p.options ?? []).find(o => o.value === p.value)
+      items.push({ t: 's', k: p.key, l: String(p.label ?? ''), val: String(o?.label ?? p.value ?? '') })
+    } else walk(p.children ?? [])
+  }
+  walk(tree)
+  return { items, onPress }
+}
 const findSvg = (n, key) => {
   if (!n || typeof n !== 'object') return undefined
   if (Array.isArray(n)) {
@@ -544,7 +566,9 @@ for (let i = Math.round(RENDER_FROM * S.FPS); i < n; i++) {
     const d = idOf(dash?.source ?? '')
     if (c !== shown.crab.id) shown.crab = { id: c, since: t }
     if (d !== shown.dash.id) shown.dash = { id: d, since: t }
-    if (i >= 0) frames.push({ c, cs: shown.crab.since, cw: crab?.width, ch: crab?.height, d, ds: shown.dash.since, toast: toastNow() })
+    const bar = deskBar(tree)
+    lastPress = bar.onPress
+    if (i >= 0) frames.push({ c, cs: shown.crab.since, cw: crab?.width, ch: crab?.height, d, ds: shown.dash.since, toast: toastNow(), bar: bar.items, crab: !!crab })
     continue
   }
   const above = await fire(
