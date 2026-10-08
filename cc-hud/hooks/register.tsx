@@ -116,6 +116,7 @@ const HPAD = 2 // 面板左右各留的空格数
 const COMPACT_AT = 75 // 上下文到这个百分比出现 [压缩] 按钮
 const HANDOFF_AT = 85 // 上下文到这个百分比: [交接] 变橙色, 螃蟹问一次「要交接吗？」(掉到 HANDOFF_REARM 以下再问)
 const HANDOFF_REARM = 70
+const HANDOFF_FILL_MS = 2 * 3600_000 // 交接写好后这么久之内, 同一个项目新开的会话 (或 /clear) 自动把它填进输入框 (只填一次)
 const STUCK_MS = 5 * 60_000 // 子代理运行中超过这么久没有工具动作 -> "可能卡住"
 const AGENTS_PANE = 'hud-agents'
 const KEEP_ENDED = 10 // 看板里保留最近结束的子代理个数
@@ -817,6 +818,41 @@ async function openProject($: any) {
   } catch (err) {
     $.ui.toast(S().toast.openFailed(String(err)))
   }
+}
+
+// 新会话 / /clear: 这个项目有一份 2 小时内、还没用过的交接 -> 输入框填一行 "@<交接文件> 按这份交接继续"
+//   (发送时 Claude Code 把 @ 引用的文件全文附上; 路径带空白时直接填全文). 填进去了才算用掉;
+//   有对话框挡着 / 输入框还没好就隔 1.5 秒再试几次; 一直没有输入框 (无界面运行、客户端自己画输入框) 就留给下一个会话
+type HandoffNext = { path: string; at: number; text?: string }
+async function fillHandoff($: any, tries = 0) {
+  let all: Record<string, HandoffNext> = {}
+  let root = ''
+  try {
+    all = ((await $.store.get('handoffNext')) as any) ?? {}
+    root = await projectDir($)
+  } catch {
+    return
+  }
+  const h = all[root]
+  if (!h) return
+  const drop = async () => {
+    delete all[root]
+    try {
+      await $.store.set('handoffNext', all)
+    } catch {}
+  }
+  if ((await $.clock.now()) - h.at > HANDOFF_FILL_MS) return drop()
+  let r: any
+  try {
+    r = await $.prompt.fill({ text: h.text ?? '@' + h.path + ' ' + S().handoff.fillLine, mode: 'replace' })
+  } catch {
+    return
+  }
+  if (r?.isFilled) {
+    await drop()
+    const d = new Date(h.at)
+    $.ui.toast(S().handoff.filled(pad2(d.getHours()) + ':' + pad2(d.getMinutes())), { timeoutMs: 9000 })
+  } else if (tries < 6) $.clock.after(1500, () => void fillHandoff($, tries + 1))
 }
 
 // 客户端复制不了剪贴板时: 用默认程序打开刚存的交接文件
@@ -1883,6 +1919,13 @@ async function runHandoff($: any, surface?: string) {
     path = base + sep + 'handoffs' + sep + slug + sep + day + '-' + hm + '.md'
     await $.fs.write(path, text)
     lastHandoff = path
+    // 下一个新会话 (或 /clear) 自动填好: 按项目记下这一份; 路径带空白时 @ 引用会断开, 连全文一起记下, 到时候填全文
+    try {
+      const root = await projectDir($)
+      const next = ((await $.store.get('handoffNext')) as any) ?? {}
+      next[root] = { path, at: await $.clock.now(), ...(/\s/.test(path) ? { text } : {}) }
+      await $.store.set('handoffNext', next)
+    } catch {}
     const home = await homeDir($, sys)
     shown = home && path.startsWith(home) ? '~' + path.slice(home.length) : path
   } catch (err: any) {
@@ -2454,6 +2497,8 @@ export const register: Register = on => {
       lastTurnTools = 0
     }
     if (path && (path !== transcriptPath || src === 'clear' || src === 'resume' || src === 'fork')) void countTokens($, { guess: path, id: '', root: '' })
+    // 新开的会话或 /clear 之后: 有没用过的交接就填进输入框 (恢复旧会话、分叉、压缩之后不填)
+    if (src === 'startup' || src === 'clear') void fillHandoff($)
     return next(e)
   })
 

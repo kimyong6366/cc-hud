@@ -30,13 +30,14 @@ const LINUX: Sys = {
 }
 const WSL: Sys = { cwd: '/home/me/my-app', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
-type Calls = { run: string[][]; cmd: string[]; dirs: string[]; toasts: string[]; opens: any[]; clock?: any; forks: string[]; copies: string[]; writes: Array<{ path: string; text: string }> }
+type Calls = { run: string[][]; cmd: string[]; dirs: string[]; toasts: string[]; opens: any[]; clock?: any; forks: string[]; copies: string[]; writes: Array<{ path: string; text: string }>; fills: Array<{ text: string; mode: string }> }
 // 新功能的测试用: 可变的用量 / 子代理列表 / 手动拨的时钟 (只替换 clock.now, 定时器仍是空的)
 // mockClock: 用 mock.clock(on) 从这个时刻起的内存时钟代替下面三个假时钟 (定时器会真的走, 测试拨 calls.clock)
 // toolGate: 工具调用等它放行才结束 (测 "工具在跑时" 用)
 // lang: 存进 store 的界面语言 (默认 zh, 旧测试都按中文写; null = 不存, 走 auto -> 英文)
 // fork / copyOk / writeFails / language: 交接功能用 ($.model.fork 的回答、剪贴板成不成、写文件抛不抛错、Claude 的 language 设置)
-type Opts = { usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
+// fillResult: $.prompt.fill 的回答 (默认填进去了; 可以模拟对话框挡着 / 没有输入框)
+type Opts = { fillResult?: (e: any) => any; usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
 
 function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
   // 存储用内存里的假存储: 测试里的 /hud top 不能写进用户真实的偏好文件
@@ -64,6 +65,12 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
     return { result: {}, text: 'ok' }
   })
   on('classic.SubagentStart', async () => ({}))
+  on('classic.SessionStart', async () => ({}))
+  on('prompt.fill', async ($: any, e: any) => {
+    const r = opts.fillResult ? opts.fillResult(e) : { isFilled: true }
+    if (r?.isFilled) calls.fills.push({ text: String(e.text), mode: String(e.mode) })
+    return r
+  })
   on('classic.SubagentStop', async () => ({}))
   on('classic.PermissionRequest', async () => ({}))
   on('classic.Notification', async () => ({}))
@@ -118,7 +125,7 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
 }
 
 async function start($: any, on: any, sys: Sys = WIN, opts: Opts = {}) {
-  const calls: Calls = { run: [], cmd: [], dirs: [], toasts: [], opens: [], forks: [], copies: [], writes: [] }
+  const calls: Calls = { run: [], cmd: [], dirs: [], toasts: [], opens: [], forks: [], copies: [], writes: [], fills: [] }
   mocks(on, calls, sys, opts)
   await $.session.start({ cwd: sys.cwd } as any)
   return calls
@@ -3114,4 +3121,104 @@ test('/hud full, /hud compact and /hud hide (also 完整 / 精简 / 隐藏) swit
   expect(await shape()).toBe('full')
   await run('')
   expect(await shape()).toBe('compact')
+})
+
+// ================= v1.2: the next session fills in the handoff by itself =================
+// 写完交接后: 同一个项目里新开的会话 (或 /clear) 输入框自动填一行 "@<交接文件> 按这份交接继续"; 2 小时内、只填一次
+const HANDOFF_LINE = /^@C:\\Users\\me\\\.claude\\handoffs\\my-app\\\d{4}-\d\d-\d\d-\d{4}\.md Continue from this handoff$/
+const handoffNow = async ($: any, calls: Calls) => {
+  await $.command.run({ command: 'hud', args: 'handoff' } as any)
+  await calls.clock.settle()
+}
+const newSession = async ($: any, calls: Calls, source: string) => {
+  await $.classic.SessionStart({ source, transcript_path: '' } as any)
+  await calls.clock.settle()
+}
+
+test('handoff auto-fill: the next new session in the same project gets "@<file> Continue from this handoff" in the prompt, once', async ($, on) => {
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0 })
+  await handoffNow($, calls)
+  expect(calls.writes.length).toBe(1)
+  // 写交接的那个会话自己不填
+  expect(calls.fills.length).toBe(0)
+  // 提示条告诉你可以这样接着干
+  expect(calls.toasts.find(t => t.startsWith('Handoff copied'))).toMatch(/new session or \/clear/)
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(1)
+  expect(calls.fills[0]?.text).toMatch(HANDOFF_LINE)
+  expect(calls.fills[0]?.mode).toBe('replace')
+  expect(calls.toasts.some(t => /^Filled in the handoff from \d\d:\d\d/.test(t))).toBe(true)
+  // 只填一次
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(1)
+})
+
+test('handoff auto-fill: /clear fills it too; resume, fork and compact do not; another project does not', async ($, on) => {
+  const sys: Sys = { ...WIN }
+  const calls = await start($, on, sys, { ...EN, mockClock: T0 })
+  await handoffNow($, calls)
+  for (const src of ['resume', 'fork', 'compact']) await newSession($, calls, src)
+  expect(calls.fills.length).toBe(0)
+  // 别的项目: 不填, 也不动这一份
+  sys.cwd = 'D:\\work\\other-app'
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(0)
+  sys.cwd = WIN.cwd
+  await newSession($, calls, 'clear')
+  expect(calls.fills.length).toBe(1)
+  expect(calls.fills[0]?.text).toMatch(HANDOFF_LINE)
+})
+
+// (不拨 2 小时的时钟: 面板的帧钟会跑几万次; 直接在存储里放一份写好多久的交接)
+test('handoff auto-fill: a handoff written more than 2 hours ago is not filled in, not even after /clear', async ($, on) => {
+  const root = 'D:\\work\\my-app'
+  const old = (ms: number) => ({ handoffNext: { [root]: { path: 'C:\\Users\\me\\.claude\\handoffs\\my-app\\old.md', at: T0 - ms } } })
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0, store: old(2 * 3600_000 + 1000) })
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(0)
+  await newSession($, calls, 'clear')
+  expect(calls.fills.length).toBe(0)
+})
+
+test('handoff auto-fill: one written just under 2 hours ago is still filled in', async ($, on) => {
+  const root = 'D:\\work\\my-app'
+  const calls = await start($, on, WIN, {
+    ...EN,
+    mockClock: T0,
+    store: { handoffNext: { [root]: { path: 'C:\\Users\\me\\.claude\\handoffs\\my-app\\old.md', at: T0 - 2 * 3600_000 + 60_000 } } },
+  })
+  await newSession($, calls, 'startup')
+  expect(calls.fills.map(f => f.text)).toEqual(['@C:\\Users\\me\\.claude\\handoffs\\my-app\\old.md Continue from this handoff'])
+})
+
+test('handoff auto-fill: a dialog in the way is retried shortly; a surface with no prompt box keeps the handoff for the next session', async ($, on) => {
+  let answer: any = { isFilled: false, refusal: 'dialog' }
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0, fillResult: () => answer })
+  await handoffNow($, calls)
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(0)
+  answer = { isFilled: true }
+  await calls.clock.advance(2000)
+  await calls.clock.settle()
+  expect(calls.fills.length).toBe(1)
+  // 没有输入框 (比如桌面客户端自己画输入框): 不重试, 这一份留给下一个会话
+  await handoffNow($, calls)
+  answer = { isFilled: false, refusal: 'no_composer' }
+  await newSession($, calls, 'startup')
+  await calls.clock.advance(20_000)
+  await calls.clock.settle()
+  expect(calls.fills.length).toBe(1)
+  answer = { isFilled: true }
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(2)
+})
+
+test('handoff auto-fill: when the file path has a space (an @ mention would break there), the handoff text itself is filled in', async ($, on) => {
+  const sys: Sys = { cwd: CWD, env: { USERPROFILE: 'C:\\Users\\Jo Smith' } }
+  const calls = await start($, on, sys, { ...EN, mockClock: T0 })
+  await handoffNow($, calls)
+  await newSession($, calls, 'startup')
+  expect(calls.fills.length).toBe(1)
+  expect(calls.fills[0]?.text.startsWith('# Handoff: my-app')).toBe(true)
+  expect(calls.fills[0]?.text).toContain('HANDOFF BODY')
 })

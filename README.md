@@ -23,7 +23,7 @@ English | [简体中文](README.zh-CN.md)
   - model and effort, project and git branch, session time and cost
   - context, 5-hour and weekly quota bars, with a time tick and an "out in 40m" warning when you're burning quota too fast
   - what Claude is doing right now, your most-used tools, and total tokens
-- **One-click handoff prompts.** When a session gets long, click `[handoff]`: Claude writes a self-contained prompt for continuing in a fresh session, and the mod copies it to your clipboard and saves it to a file. At 85% context the button turns orange to remind you.
+- **One-click handoff prompts.** When a session gets long, click `[handoff]`: Claude writes a self-contained prompt for continuing in a fresh session, and the mod copies it to your clipboard and saves it to a file. Open a new session in the same project (or run `/clear`) and the prompt is already filled in. At 85% context the button turns orange to remind you.
 - **A subagent board.** It shows every running subagent, workflow agents included, and what each one is doing right now (`Bash npm test`, `Read src/app.ts`, …), grouped by workflow.
 - **A pixel crab.** It walks above the prompt and acts out what Claude is doing: reading, typing, running commands, browsing. Your subagents walk behind it as baby crabs. It sweats or panics as your quota runs low, and celebrates when a turn is done. It moves in half-cell steps at 13 frames a second, with in-between poses, so it looks smooth even in a terminal.
 - **English and Chinese UI**, switchable from the toolbar or with `/hud lang`.
@@ -48,7 +48,7 @@ You don't have to do anything: the panel and the crab update on their own while 
 
 | You want to | Click (fullscreen) | Or type |
 |---|---|---|
-| Continue in a fresh session (long session, context filling up) | `[handoff]` on the toolbar, then paste into a new session | `/hud handoff` |
+| Continue in a fresh session (long session, context filling up) | `[handoff]` on the toolbar, then open a new session or run `/clear`: the prompt is filled in for you | `/hud handoff` |
 | See what your subagents and workflow agents are doing | `+N agents` in the Status cell | `/hud agents` |
 | Switch language | `[settings]` → `Lang` | `/hud lang en`, `/hud lang zh`, `/hud lang auto` |
 | Hide or show the crab | `[settings]` → `Crab` | `/hud crab off`, `/hud crab on` |
@@ -153,6 +153,11 @@ Every move has in-between frames:
 
 - It's written in a side request ("fork") that sees the full conversation but adds nothing to your transcript and reuses the prompt cache. It costs one short reply, which shows up in the session cost.
 - While Claude writes, the chip reads `[writing handoff... 8s]`. When it's done, the prompt is **copied to your clipboard** and **saved** to `~/.claude/handoffs/<project>/<YYYY-MM-DD-HHmm>.md`, outside your repo, so a lost clipboard never loses it. A toast tells you where.
+- **The next session fills it in for you.** Open a new `claude` session in the same project, or run `/clear`, and the prompt box already holds `@<the handoff file> Continue from this handoff`. Press Enter and Claude Code attaches the whole file.
+  - This happens once, within 2 hours of writing the handoff.
+  - It doesn't happen when you resume an old session (`--resume`), fork one, or after a compaction.
+  - If the file path contains a space, which would break the `@` reference, the handoff text itself is filled in.
+  - The desktop app draws its own prompt box, so there you use **Open handoff file** instead.
 - The prompt starts with a header (project, branch, time, and `claude --resume <id>` to reopen the original session), then the sections Goal, Current state, Key decisions, Files & locations, Gotchas, Next steps and Verify. Claude writes it in the language you've been using.
 - At 85% context the `[handoff]` brackets turn orange and the crab asks 「Handoff?」 once. It asks again after the context drops below 70%, for example after a compaction.
 - Then open a new session (`/clear`, or a new terminal) and paste.
@@ -176,7 +181,7 @@ The panel shrinks with the window: 81 columns or more shows the full 3 × 3 grid
 | `/hud agents` | Opens the subagent board; Esc closes it |
 | `/hud crab`, `/hud crab on`, `/hud crab off` | Toggles the crab above the prompt (on by default) |
 | `/hud lang en`, `/hud lang zh`, `/hud lang auto` | Sets the UI language; `auto` follows Claude Code's `language` setting. `/hud lang` alone switches between the two |
-| `/hud handoff` | Writes a handoff prompt, copies it and saves it (same as the `[handoff]` chip) |
+| `/hud handoff` | Writes a handoff prompt, copies it and saves it (same as the `[handoff]` chip); the next new session or `/clear` fills it in |
 
 In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) above the prompt, borderless, following the light or dark theme. The desktop crab animates smoothly too:
 - moves glide instead of stepping a pixel at a time
@@ -249,6 +254,10 @@ cc-hud/
 tools/                      preview and GIF scripts
 assets/                     GIFs for this README
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
