@@ -55,8 +55,19 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
     calls.toasts.push(String(e?.text ?? ''))
     return { value: undefined }
   })
+  // 引擎只把「按钮处理还没结束时」打开的面板算作用户要的 (任何宽度都放); 处理完了才打开的算没人要, 144 列以下不放.
+  //   这里记下每次打开时是不是还在按钮处理里 (duringPress)
+  let pressDepth = 0
+  on('ui.press', async ($: any, e: any, next: any) => {
+    pressDepth += 1
+    try {
+      return await next(e)
+    } finally {
+      pressDepth -= 1
+    }
+  })
   on('ui.open', async ($: any, e: any) => {
-    calls.opens.push(e)
+    calls.opens.push({ ...e, duringPress: pressDepth > 0 })
     return { value: { isPlaced: true } }
   })
   on('ui.close', async ($: any, e: any) => {
@@ -3579,4 +3590,20 @@ test('panic while working, on the desktop: no red dot; the sweat is flung into t
   }
   // 负路径: 只是冒汗 (不慌张) 时, 头边那颗汗滴还在
   expect(deskCrab({ mood: 'sweat', mode: 'work', kind: 'bash' })).toMatch(/attributeName="y" values="0;2"/)
+})
+
+// ================= v1.3.1: a pane opened by a button must open while the press is still being handled =================
+// 引擎只在按钮的处理函数还没结束时, 才把打开面板算作「用户点的」(任何宽度都放). 1.3.0 的 [历史] 写成 () => void openHistory(...):
+//   处理函数马上返回, 等完时钟 (防连点) 才打开 -> 算没人要, 102 列的终端里弹「unasked below 144 columns」
+test('buttons that open a pane keep the press going until the pane is open (else the engine treats it as unasked below 144 columns)', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  const term = await mountHint($, 'terminal', 140)
+  await term.press({ key: 'btn-history' })
+  await term.unmount()
+  await calls.clock.advance(2000) // 防连点: 两次按之间隔开
+  const desk = await mountDesktop($, 120)
+  await desk.press({ key: 'btn-history' })
+  await desk.unmount()
+  const opens = calls.opens.filter((o: any) => o.id === 'hud-handoffs')
+  expect(opens.map((o: any) => o.duringPress)).toEqual([true, true])
 })

@@ -4,6 +4,12 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Notable changes to cc-hud, newest first. Each version matches `version` in `cc-hud/.claude-plugin/plugin.json`.
 
+## 1.3.1 (2026-10-08)
+
+### Fixed
+
+- Clicking `[history]` (or the desktop app's **Handoff history**) in a terminal narrower than 144 columns showed "Couldn't open the handoff history: unasked below 144 columns". `/hud history` was not affected. The button now opens the pane at any width.
+
 ## 1.3.0 (2026-10-08)
 
 ### Added

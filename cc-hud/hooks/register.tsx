@@ -1620,7 +1620,7 @@ function deskToolbar($: any, els: any, pct: number | undefined) {
       {...(hot ? { variant: 'primary' } : {})}
       onPress={(press: any) => void startHandoff($, press?.surface ?? 'desktop')}
     />,
-    <Button key="btn-history" label={B.historyDesk} onPress={() => void openHistory($, true)} />,
+    <Button key="btn-history" label={B.historyDesk} onPress={() => openHistory($, true)} />,
   ]
   if (lastHandoff && !handoffBusy) items.push(<Button key="btn-handoff-open" label={B.openHandoff} onPress={() => void openHandoffFile($)} />)
   if (settingsOpen) {
@@ -2027,7 +2027,7 @@ function toolbarRows($: any, els: any, width: number, pct: number | undefined, n
   const B = S().bar
   // v1.3: 工具栏多一个 [历史]. 一行的精简版里不放 (位置太紧); 普通画面 (不是全屏) 也不放: 点不动, 把位置让给提示
   const first = [...barChips($, els, pct, now)]
-  if (fullscreen) first.push(chip(els, 'hib', 'btn-history', B.history, () => void openHistory($, true), false, false))
+  if (fullscreen) first.push(chip(els, 'hib', 'btn-history', B.history, () => openHistory($, true), false, false))
   // 排行: 按钮之间空 1 格, 各组之间空 3 格; 放不下就换行 (中等版一般是两行)
   const items: Array<{ p: Piece; gap: number }> = first.map(p => ({ p, gap: 1 }))
   if (!fullscreen) {
