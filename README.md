@@ -23,7 +23,7 @@ English | [简体中文](README.zh-CN.md)
   - model and effort, project and git branch, session time and cost
   - context, 5-hour and weekly quota bars, with a time tick and an "out in 40m" warning when you're burning quota too fast
   - what Claude is doing right now, your most-used tools, and total tokens
-- **One-click handoff prompts.** When a session gets long, click `[handoff]`: Claude writes a self-contained prompt for continuing in a fresh session, and the mod copies it to your clipboard and saves it to a file. Open a new session in the same project (or run `/clear`) and the prompt is already filled in. At 85% context the button turns orange to remind you.
+- **One-click handoff prompts.** When a session gets long, click `[handoff]`: Claude writes a self-contained prompt for continuing in a fresh session, and the mod copies it to your clipboard and saves it to a file. Click `[clear & continue]` (or open a new session in the same project) and the prompt is already filled in. `[history]` lists your earlier handoffs. At 85% context the button turns orange to remind you.
 - **A subagent board.** It shows every running subagent, workflow agents included, and what each one is doing right now (`Bash npm test`, `Read src/app.ts`, …), grouped by workflow.
 - **A pixel crab.** It walks above the prompt and acts out what Claude is doing: reading, typing, running commands, browsing. Your subagents walk behind it as baby crabs. It sweats or panics as your quota runs low, and celebrates when a turn is done. It moves in half-cell steps at 13 frames a second, with in-between poses, so it looks smooth even in a terminal.
 - **English and Chinese UI**, switchable from the toolbar or with `/hud lang`.
@@ -48,7 +48,8 @@ You don't have to do anything: the panel and the crab update on their own while 
 
 | You want to | Click (fullscreen) | Or type |
 |---|---|---|
-| Continue in a fresh session (long session, context filling up) | `[handoff]` on the toolbar, then open a new session or run `/clear`: the prompt is filled in for you | `/hud handoff` |
+| Continue in a fresh session (long session, context filling up) | `[handoff]` on the toolbar, then `[clear & continue]` (or open a new session): the prompt is filled in for you | `/hud handoff`, then `/clear` |
+| Pick up an earlier handoff | `[history]` on the toolbar, then a digit (1-9) | `/hud history` |
 | See what your subagents and workflow agents are doing | `+N agents` in the Status cell | `/hud agents` |
 | Switch language | `[settings]` → `Lang` | `/hud lang en`, `/hud lang zh`, `/hud lang auto` |
 | Hide or show the crab | `[settings]` → `Crab` | `/hud crab off`, `/hud crab on` |
@@ -88,7 +89,7 @@ claude --plugin-dir ./cc-hud/cc-hud
 
 In the terminal, cc-hud draws two things: a usage panel under the prompt, and a pixel crab that walks in a strip above it.
 
-The panel starts with a small toolbar, `[settings] [handoff]`, followed by a 3 × 3 grid whose labels line up in columns:
+The panel starts with a small toolbar, `[settings] [handoff] [history]`, followed by a 3 × 3 grid whose labels line up in columns:
 
 | | Column 1 | Column 2 | Column 3 |
 |---|---|---|---|
@@ -130,7 +131,7 @@ Every move has in-between frames:
 |---|---|---|
 | Using less than the clock (pace < 0.8) | Wears sunglasses, strolls | Normal |
 | Clearly ahead of pace, on track to run out before the reset | Sweats, walks faster | The percentage and the countdown turn red: `out 40m` |
-| Runs out within 30 minutes, or ≥ 95% used | Panics: flails its claws in turn and flings sweat off its head, with a red "!" flashing beside it; scurries when walking | Same as above |
+| Runs out within 30 minutes, or ≥ 95% used | Panics: flings sweat up off its head, also while it works; when idle it flails its claws in turn with a red "!" beside it; scurries when walking | Same as above |
 
 - Small particles keep it lively: dust behind its feet, a drop of sweat when it hurries, gold sparkles when a turn finishes, bubbles while it sleeps.
 - Speech bubbles appear beside the crab for a few seconds: a finished turn (「Done 3m12s」), a finished compaction (「Compacted」), a quota reset (「Quota's back」), a red pace warning (「Slow down! out in 40m」), context filling up (「Context almost full」, then 「Handoff?」 at 85%), and a permission prompt waiting for you (「Your call」).
@@ -141,13 +142,13 @@ Every move has in-between frames:
 **Settings toolbar**: click `[settings]` and the options open on the same row (they wrap onto a second row in narrower windows). Click `[settings]` again to close them. Each choice is remembered across sessions.
 
 ```
- [settings] [handoff]   Lang [EN] 中文   Crab [on] off   Panel [full] compact hide
+ [settings] [handoff] [history]   Lang [EN] 中文   Crab [on] off   Panel [full] compact hide
 ```
 
 - **Lang**: English or Chinese, for the whole panel, crab bubbles, toasts and the subagent board. Until you pick one, it follows Claude Code's `language` setting (Chinese if that's Chinese, English otherwise).
 - **Crab**: the walking crab above the prompt.
 - **Panel**: full grid, one-line compact, or hidden. The one-line layout has no room for the toolbar, and hiding the panel hides it too; `/hud` brings the full panel back.
-- Clicking needs fullscreen rendering (`/tui fullscreen`). On the default (main-screen) renderer the terminal keeps mouse clicks for itself, so the toolbar shows a dim hint, `clicks need /tui fullscreen, or type /hud handoff`, and the `/hud` commands do the same jobs.
+- Clicking needs fullscreen rendering (`/tui fullscreen`). On the default (main-screen) renderer the terminal keeps mouse clicks for itself, so the toolbar shows a dim hint, `clicks need /tui fullscreen, or type /hud handoff`, in place of `[history]`, and the `/hud` commands do the same jobs.
 
 **Handoff prompts**: click `[handoff]` (or run `/hud handoff`) when you want to continue in a fresh session. Claude writes a self-contained handoff prompt using the whole conversation, so the next session can pick up where you left off:
 
@@ -158,9 +159,18 @@ Every move has in-between frames:
   - It doesn't happen when you resume an old session (`--resume`), fork one, or after a compaction.
   - If the file path contains a space, which would break the `@` reference, the handoff text itself is filled in.
   - The desktop app draws its own prompt box, so there you use **Open handoff file** instead.
+- **`[clear & continue]`** appears after `[handoff]` once this conversation has a handoff (terminal only). Click it and cc-hud runs `/clear` for you (once Claude is idle), and the cleared session gets the handoff line, even if you already used that handoff once. Nothing is cleared until you click: the original session stays reachable with `claude --resume`.
+- **Handoff history**: `[history]` on the toolbar, or `/hud history`, opens a pane listing this project's handoffs, newest first (up to 9). Each row shows when it was written, the branch and its first next step:
+  ```
+   2 saved, newest first                     digit fills in · Esc closes
+   [ 1 fill in ] [ open ]  today 12:52  main  ask whether to build the handoff history…
+   [ 2 fill in ] [ open ]  yesterday 18:30  feature/pay  fix the refund button
+   [ open folder ]
+  ```
+  Press a digit (or click `fill in`) and the prompt box gets that handoff's `@` line; anything you had typed stays below it. `open` opens the file in your default editor, and `open folder` shows them all.
 - The prompt starts with a header (project, branch, time, and `claude --resume <id>` to reopen the original session), then the sections Goal, Current state, Key decisions, Files & locations, Gotchas, Next steps and Verify. Claude writes it in the language you've been using.
 - At 85% context the `[handoff]` brackets turn orange and the crab asks 「Handoff?」 once. It asks again after the context drops below 70%, for example after a compaction.
-- Then open a new session (`/clear`, or a new terminal) and paste.
+- Handoff + clear or `/compact`? `/compact` keeps going in the same session with a summary you don't see. A handoff is a structured file you can read, edit and reuse, and the next session starts small and clean. Hand off at a natural break, compact in the middle of a task.
 
 **More practical touches**
 
@@ -182,6 +192,7 @@ The panel shrinks with the window: 81 columns or more shows the full 3 × 3 grid
 | `/hud crab`, `/hud crab on`, `/hud crab off` | Toggles the crab above the prompt (on by default) |
 | `/hud lang en`, `/hud lang zh`, `/hud lang auto` | Sets the UI language; `auto` follows Claude Code's `language` setting. `/hud lang` alone switches between the two |
 | `/hud handoff` | Writes a handoff prompt, copies it and saves it (same as the `[handoff]` chip); the next new session or `/clear` fills it in |
+| `/hud history` | Opens the handoff history (same as `[history]`); a digit fills one in, Esc closes it |
 
 In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) above the prompt, borderless, following the light or dark theme. The desktop crab animates smoothly too:
 - moves glide instead of stepping a pixel at a time
@@ -193,10 +204,9 @@ In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) ab
 - **Settings** opens three dropdowns: Lang, Crab and Panel.
 - **Handoff** writes a handoff prompt. It turns into the app's primary button once context reaches 85%, and shows "Writing handoff…" while Claude writes.
 - The desktop app can't copy to the clipboard from a mod yet, so the handoff is saved to a file and an **Open handoff file** button opens it in your default editor.
+- **Handoff history** opens the same history pane as in the terminal. The app probably won't let a mod fill its prompt box, so use **Open** there.
 
 Clicks work in the desktop app without any extra setting.
-
-To see every move without the desktop app, run `node tools/preview-client.mjs` and open `tools/out/client.html` in a browser.
 
 <img src="assets/client.gif" alt="cc-hud in the desktop app: an SVG card above the prompt" width="900">
 
@@ -242,8 +252,6 @@ claude plugin test ./cc-hud
 - Bump `version` in `plugin.json` after each change: cc-hud reloads itself in the desktop app when the version changes, and marketplace users only receive a new version.
 - All UI text lives in `cc-hud/hooks/strings.ts`, one table per language with identical keys (a test checks this). Add a string to both tables.
 - In the terminal, use only ASCII, CJK characters, `│ ─ ━ ✓` and block characters. Glyphs such as `• ⏱ ↻ ✦` have an ambiguous width in some terminals and overlap their neighbours.
-- `node tools/preview-client.mjs` renders a preview of the desktop panel, plus a gallery of every crab move, to `tools/out/client.html` without opening the app (Node 22.6 or later).
-- `tools/demo/` renders the GIFs on this page from the real code, in English and Chinese (see `tools/demo/README.md`).
 
 ```
 cc-hud/
@@ -251,7 +259,6 @@ cc-hud/
   hooks/strings.ts          UI text, English and Chinese
   hooks/desktop.ts          desktop panel (SVG)
   scripts/count-tokens.js   counts a session's tokens, subagents included
-tools/                      preview and GIF scripts
 assets/                     GIFs for this README
 ```
 

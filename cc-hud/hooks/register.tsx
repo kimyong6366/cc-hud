@@ -119,6 +119,8 @@ const HANDOFF_REARM = 70
 const HANDOFF_FILL_MS = 2 * 3600_000 // 交接写好后这么久之内, 同一个项目新开的会话 (或 /clear) 自动把它填进输入框 (只填一次)
 const STUCK_MS = 5 * 60_000 // 子代理运行中超过这么久没有工具动作 -> "可能卡住"
 const AGENTS_PANE = 'hud-agents'
+const HIST_PANE = 'hud-handoffs' // 交接历史 (v1.3)
+const HIST_MAX = 9 // 交接历史最多列几份 (数字键 1-9)
 const KEEP_ENDED = 10 // 看板里保留最近结束的子代理个数
 // 额度窗口长度
 const WINDOW_MS: Record<string, number> = { five_hour: 5 * 3600_000, seven_day: 7 * 86400_000 }
@@ -865,6 +867,261 @@ async function openHandoffFile($: any) {
   }
 }
 
+// ---------------- 交接历史 (v1.3) ----------------
+// /hud history、工具栏 [历史]、客户端「交接历史」: 面板里列出这个项目存过的交接 (最新在上, 最多 9 份)
+//   每份: [数字 填入] [打开]  时间  分支  下一步的第一条; 填入 = 输入框里填一行 "@<文件> 按这份交接继续" (和自动填入同一行)
+
+// 这个项目的交接文件夹: <Claude 配置目录>/handoffs/<项目名> (写交接和交接历史共用); 拿不到主目录就抛错
+async function handoffDir($: any): Promise<{ dir: string; sep: string; sys: OS }> {
+  const sys = await detectOS($, cwd || (await projectDir($)))
+  const sep = sepOf(sys)
+  const base = await claudeDir($, sys)
+  if (!base) throw new Error('no home folder')
+  const slug = (project || 'project').replace(/[^A-Za-z0-9._-]+/g, '-')
+  return { dir: base + sep + 'handoffs' + sep + slug, sep, sys }
+}
+
+// 交接文件的一行摘要: 标题行里的分支, 「下一步」的第一条 (去掉编号和开头的 "Start by");
+//   没有下一步就用第一节 (目标) 的第一行
+export function handoffBrief(text: string): { branch: string; next: string } {
+  const lines = String(text ?? '').split(/\r?\n/)
+  const head = lines[0] ?? ''
+  const m = head.startsWith('#') ? /[(（]([^()（）]+)[)）]\s*·/.exec(head) : null
+  const firstLine = (from: number) => {
+    for (let i = from; i < lines.length; i++) {
+      const l = (lines[i] ?? '').trim()
+      if (l.startsWith('#')) break
+      if (l) return l
+    }
+    return ''
+  }
+  const nextAt = lines.findIndex(l => /^#{2,3}\s*(next steps?\b|下一步)/i.test(l.trim()))
+  const goalAt = lines.findIndex(l => /^##\s/.test(l.trim()))
+  let next = nextAt >= 0 ? firstLine(nextAt + 1) : ''
+  if (!next && goalAt >= 0) next = firstLine(goalAt + 1)
+  next = next
+    .replace(/^(?:\d+[.)、]|[-*•])\s*/, '')
+    .replace(/\*\*|__/g, '')
+    .replace(/^start by\s+/i, '')
+    .replace(/[‘’]/g, "'")
+    .replace(/[“”]/g, '"')
+    .replace(/[—–]/g, '-')
+    .replace(/→/g, '->')
+    .replace(/…/g, '...')
+    .replace(/·/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return { branch: safe((m?.[1] ?? '').trim()), next: safe(next) }
+}
+
+type HistItem = { name: string; path: string; at: number; mtime: number; brief: { branch: string; next: string } }
+type HistList = { dir: string; total: number; items: HistItem[]; at: number }
+let histList: HistList | undefined // 面板每次重画都会来要: 3 秒内用上次读的 (打开面板、写完新交接时作废)
+const histBriefs = new Map<string, { mtime: number; brief: { branch: string; next: string } }>()
+
+// 文件名 YYYY-MM-DD-HHmm.md 就是写的时间; 别的名字按修改时间
+function timeOfName(name: string): number | undefined {
+  const m = /^(\d{4})-(\d\d)-(\d\d)-(\d\d)(\d\d)\.md$/i.exec(name)
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5])).getTime() : undefined
+}
+
+async function loadHistory($: any): Promise<HistList> {
+  const now = await $.clock.now()
+  if (histList && now - histList.at < 3000) return histList
+  let dir = ''
+  let sep = '/'
+  let entries: any[] = []
+  try {
+    ;({ dir, sep } = await handoffDir($))
+    entries = await $.fs.list(dir)
+  } catch {
+    entries = [] // 还没写过交接: 文件夹不存在
+  }
+  const all = entries
+    .filter(f => f?.kind === 'file' && /\.md$/i.test(String(f.name)))
+    .map(f => ({ name: String(f.name), path: dir + sep + f.name, at: timeOfName(String(f.name)) ?? (Number(f.mtimeMs) || 0), mtime: Number(f.mtimeMs) || 0 }))
+    .sort((a, b) => b.at - a.at || (a.name < b.name ? 1 : -1))
+  const items: HistItem[] = []
+  for (const f of all.slice(0, HIST_MAX)) {
+    let c = histBriefs.get(f.path)
+    if (!c || c.mtime !== f.mtime) {
+      let brief = { branch: '', next: '' }
+      try {
+        brief = handoffBrief(String(await $.fs.read(f.path)))
+      } catch {}
+      c = { mtime: f.mtime, brief }
+      histBriefs.set(f.path, c)
+    }
+    items.push({ ...f, brief: c.brief })
+  }
+  histList = { dir: entries.length || all.length ? dir : '', total: all.length, items, at: now }
+  return histList
+}
+
+// 时间: 今天 / 昨天 + 时分; 今年的写 月-日 时分; 更早的写年月日
+function histWhen(at: number, now: number): string {
+  const H = S().hist
+  const d = new Date(at)
+  const n = new Date(now)
+  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
+  const ago = Math.round((day(n) - day(d)) / 86400_000)
+  const t = pad2(d.getHours()) + ':' + pad2(d.getMinutes())
+  const md = pad2(d.getMonth() + 1) + '-' + pad2(d.getDate())
+  if (ago === 0) return H.today + ' ' + t
+  if (ago === 1) return H.yesterday + ' ' + t
+  return d.getFullYear() === n.getFullYear() ? md + ' ' + t : d.getFullYear() + '-' + md
+}
+
+async function openHistory($: any, fromPress: boolean) {
+  if (fromPress && !(await pressOk($, 'history'))) return
+  histList = undefined
+  try {
+    const r = await $.ui.open({ id: HIST_PANE, title: S().hist.title, focus: true, closeOnEscape: true })
+    if (r && r.isPlaced === false) $.ui.toast(S().toast.histFailed(String(r.reason ?? '')))
+  } catch (err) {
+    $.ui.toast(S().toast.histFailed(String(err)))
+  }
+}
+
+// 填入: 输入框里已经打的字留着, 交接那一行放在前面; 路径带空白时 @ 会断开, 填全文
+async function fillFromHistory($: any, it: HistItem, when: string) {
+  if (!(await pressOk($, 'hist-fill'))) return
+  let line = '@' + it.path + ' ' + S().handoff.fillLine
+  if (/\s/.test(it.path)) {
+    try {
+      line = String(await $.fs.read(it.path))
+    } catch {}
+  }
+  let draft = ''
+  try {
+    draft = String((await $.prompt.read())?.text ?? '')
+  } catch {}
+  let r: any
+  try {
+    r = await $.prompt.fill({ text: draft.trim() ? line + '\n' + draft : line, mode: 'replace' })
+  } catch {}
+  if (!r?.isFilled) {
+    $.ui.toast(S().hist.noFill, { timeoutMs: 9000 })
+    return
+  }
+  // 正好是等着下一个会话自动填的那一份: 算用掉了, /clear 时不再填一次
+  try {
+    const root = await projectDir($)
+    const next = ((await $.store.get('handoffNext')) as any) ?? {}
+    if (next[root]?.path === it.path) {
+      delete next[root]
+      await $.store.set('handoffNext', next)
+    }
+  } catch {}
+  try {
+    await $.ui.close({ id: HIST_PANE })
+  } catch {}
+  $.ui.toast(S().handoff.filled(when), { timeoutMs: 9000 })
+}
+
+async function openFromHistory($: any, key: string, target: string) {
+  if (!target || !(await pressOk($, key))) return
+  try {
+    await openPath($, target)
+  } catch (err) {
+    $.ui.toast(S().toast.openFailed(String(err)))
+  }
+}
+
+// 面板: 头一行 "共 N 份" (终端右边写按键提示); 宽 (>= 72 列) 一份一行, 窄的时候下一步换到第二行; 最后 [打开文件夹]
+async function buildHistoryPane($: any, els: any, W: number, surface: string) {
+  const { Box, Text, Button } = els
+  const H = S().hist
+  const term = surface === 'terminal'
+  const width = Math.max(30, W)
+  const list = await loadHistory($)
+  const now = await $.clock.now()
+  if (!list.items.length) {
+    return (
+      <Box flexDirection="column">
+        <Text key="hist-empty" color={DIM}>
+          {H.empty}
+        </Text>
+      </Box>
+    )
+  }
+  const count = H.count(String(list.total), String(list.items.length))
+  const head = term && dw(count) + 3 + dw(H.keys) <= width ? padR(count, width - dw(H.keys)) + H.keys : clip(count, width)
+  const label = (s: string) => (term ? s : cap1(s))
+  // 终端按钮画成 "[ label ]": 比字多 4 格
+  const fillW = term ? dw('1 ' + H.fill) + 4 : 0
+  const openW = term ? dw(H.open) + 4 : 0
+  const btnW = fillW + 1 + openW
+  const whens = list.items.map(it => histWhen(it.at, now))
+  const timeW = Math.max(...whens.map(dw))
+  const branchW = Math.min(16, Math.max(0, ...list.items.map(it => dw(it.brief.branch))))
+  const wide = width >= 72
+  const rows: any[] = []
+  list.items.forEach((it, i) => {
+    const btns = [
+      <Button key={'hist-fill-' + i} label={term ? i + 1 + ' ' + H.fill : label(H.fill)} hotkey={String(i + 1)} onPress={() => void fillFromHistory($, it, whens[i] ?? '')} />,
+      <Text key={'hist-g-' + i}> </Text>,
+      <Button key={'hist-open-' + i} label={label(H.open)} dimColor onPress={() => void openFromHistory($, 'hist-open', it.path)} />,
+    ]
+    const when = '  ' + padR(whens[i] ?? '', timeW)
+    if (wide) {
+      const branch = branchW ? '  ' + padR(clip(it.brief.branch, branchW), branchW) : ''
+      const room = width - btnW - dw(when) - dw(branch) - 2
+      rows.push(
+        <Box key={'hist-row-' + i} flexDirection="row">
+          {btns}
+          <Text key={'hist-when-' + i} color={VALUE}>
+            {when}
+          </Text>
+          <Text key={'hist-br-' + i} color={DIM}>
+            {branch}
+          </Text>
+          <Text key={'hist-next-' + i} color={VALUE}>
+            {room >= 4 ? '  ' + clip(it.brief.next, room) : ''}
+          </Text>
+        </Box>,
+      )
+      return
+    }
+    const roomBr = width - btnW - dw(when) - 2
+    const branch = it.brief.branch && roomBr >= 4 ? '  ' + clip(it.brief.branch, roomBr) : ''
+    rows.push(
+      <Box key={'hist-row-' + i} flexDirection="row">
+        {btns}
+        <Text key={'hist-when-' + i} color={VALUE}>
+          {clip(when, Math.max(0, width - btnW))}
+        </Text>
+        <Text key={'hist-br-' + i} color={DIM}>
+          {branch}
+        </Text>
+      </Box>,
+    )
+    if (it.brief.next)
+      rows.push(
+        <Box key={'hist-row-' + i + '-2'} flexDirection="row" height={1}>
+          <Text key={'hist-next-' + i} color={VALUE}>
+            {'   ' + clip(it.brief.next, width - 3)}
+          </Text>
+        </Box>,
+      )
+  })
+  return (
+    <Box flexDirection="column">
+      <Box key="hist-head" flexDirection="row" height={1}>
+        <Text key="hist-count" color={DIM}>
+          {head}
+        </Text>
+      </Box>
+      {rows}
+      {list.dir ? (
+        <Box key="hist-foot" flexDirection="row">
+          <Button key="hist-folder" label={label(H.folder)} dimColor onPress={() => void openFromHistory($, 'hist-folder', list.dir)} />
+        </Box>
+      ) : null}
+    </Box>
+  )
+}
+
 async function runSlash($: any, command: string, fallbackUrl?: string) {
   if (!(await pressOk($, 'cmd-' + command))) return
   try {
@@ -1363,6 +1620,7 @@ function deskToolbar($: any, els: any, pct: number | undefined) {
       {...(hot ? { variant: 'primary' } : {})}
       onPress={(press: any) => void startHandoff($, press?.surface ?? 'desktop')}
     />,
+    <Button key="btn-history" label={B.historyDesk} onPress={() => void openHistory($, true)} />,
   ]
   if (lastHandoff && !handoffBusy) items.push(<Button key="btn-handoff-open" label={B.openHandoff} onPress={() => void openHandoffFile($)} />)
   if (settingsOpen) {
@@ -1518,8 +1776,14 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     ]
     // v1.1: 一行版最前面也放 [设置] [交接] (最优先, 窄的时候先让用量条): 不然切到精简以后点不回来, 也交接不了;
     //   点了 [设置], 三组选项排在下一行
-    const [sc, hc] = barChips($, els, pct, now)
-    const head: Seg = { key: 'seg-bar', w: sc.w + 1 + hc.w, prio: -1, parts: [...sc.parts, <Text key="bar-sp"> </Text>, ...hc.parts] }
+    //   v1.3: 写好交接后还有 [清空并继续]
+    const chips = barChips($, els, pct, now)
+    const head: Seg = {
+      key: 'seg-bar',
+      w: chips.reduce((w, p, i) => w + p.w + (i ? 1 : 0), 0),
+      prio: -1,
+      parts: chips.flatMap((p, i) => [...(i ? [<Text key={'bar-sp' + i}> </Text>] : []), ...p.parts]),
+    }
     const inner = W - HPAD * 2
     return (
       <Box key="hud" flexDirection="column" paddingLeft={HPAD} paddingRight={HPAD}>
@@ -1709,6 +1973,7 @@ let settingsOpen = false // 设置那几组选项展开着 (不存 store, 新会
 let handoffBusy = false // 交接提示词正在写 (同一时间只写一份)
 let handoffAt = 0 // 开始写的时间 (按钮上显示已经写了多久)
 let lastHandoff = '' // 最近一次存好的交接文件 (客户端复制不了剪贴板: 工具栏多一个「打开交接文件」)
+let clearReady: HandoffNext | undefined // 这个会话 (这段对话) 写好的交接: 终端的 [交接] 后面出现 [清空并继续]; 新会话 / 清空 / 恢复时作废
 let saidHandoff = false // 上下文到 HANDOFF_AT 时螃蟹问过一次 "要交接吗"
 
 type Piece = { w: number; parts: any[] }
@@ -1760,8 +2025,10 @@ function group(els: any, key: string, name: string, opts: Piece[]): Piece {
 function toolbarRows($: any, els: any, width: number, pct: number | undefined, now: number, fullscreen = true): any[] {
   const { Box, Text } = els
   const B = S().bar
-  const first = barChips($, els, pct, now)
-  // 排行: 两个按钮之间空 1 格, 各组之间空 3 格; 放不下就换行 (中等版一般是两行)
+  // v1.3: 工具栏多一个 [历史]. 一行的精简版里不放 (位置太紧); 普通画面 (不是全屏) 也不放: 点不动, 把位置让给提示
+  const first = [...barChips($, els, pct, now)]
+  if (fullscreen) first.push(chip(els, 'hib', 'btn-history', B.history, () => void openHistory($, true), false, false))
+  // 排行: 按钮之间空 1 格, 各组之间空 3 格; 放不下就换行 (中等版一般是两行)
   const items: Array<{ p: Piece; gap: number }> = first.map(p => ({ p, gap: 1 }))
   if (!fullscreen) {
     const room = width - first.reduce((w, p, i) => w + p.w + (i ? 1 : 0), 0) - 3
@@ -1784,14 +2051,35 @@ function toolbarRows($: any, els: any, width: number, pct: number | undefined, n
 }
 
 // [设置] [交接] 两个按钮 (工具栏和一行版共用); 上下文 >= 85% 时 [交接] 的方括号变橙色
-function barChips($: any, els: any, pct: number | undefined, now: number): [Piece, Piece] {
+//   v1.3: 这个会话写好交接后, 后面多一个橙色的 [清空并继续]
+function barChips($: any, els: any, pct: number | undefined, now: number): Piece[] {
   const B = S().bar
   const hot = !handoffBusy && (pct ?? 0) >= HANDOFF_AT
   const hText = handoffBusy ? B.writing(dur(handoffAt ? Math.max(0, now - handoffAt) : 0)) : B.handoff
-  return [
+  const out = [
     chip(els, 'sb', 'btn-settings', B.settings, () => toggleSettings($), settingsOpen, settingsOpen),
     chip(els, 'hb', 'btn-handoff', hText, press => void startHandoff($, press?.surface), hot, handoffBusy),
   ]
+  if (clearReady && !handoffBusy) out.push(chip(els, 'cb', 'btn-clear-go', B.clearGo, () => void clearAndContinue($), true, true))
+  return out
+}
+
+// [清空并继续]: 跑 /clear (引擎等会话闲下来才跑); 清空后的会话由 SessionStart (source: clear) 照常自动填好交接.
+//   先把这一份重新记成「下一个会话要填的」: 就算已经填过一次 (比如从交接历史里挑过), 清空后也照样填
+async function clearAndContinue($: any) {
+  const h = clearReady
+  if (!h || !(await pressOk($, 'clear-go'))) return
+  try {
+    const root = await projectDir($)
+    const next = ((await $.store.get('handoffNext')) as any) ?? {}
+    next[root] = { ...h, at: await $.clock.now() }
+    await $.store.set('handoffNext', next)
+  } catch {}
+  try {
+    await $.command.run({ command: 'clear' })
+  } catch (err) {
+    $.ui.toast(S().toast.cmdFailed('clear', String(err)))
+  }
 }
 
 // 点了 [设置] 之后的三组选项 (工具栏和一行版共用)
@@ -1910,20 +2198,17 @@ async function runHandoff($: any, surface?: string) {
   let shown = ''
   let saveErr = ''
   try {
-    const here = cwd || (await projectDir($))
-    const sys = await detectOS($, here)
-    const sep = sepOf(sys)
-    const base = await claudeDir($, sys)
-    if (!base) throw new Error('no home folder')
-    const slug = (project || 'project').replace(/[^A-Za-z0-9._-]+/g, '-')
-    path = base + sep + 'handoffs' + sep + slug + sep + day + '-' + hm + '.md'
+    const { dir, sep, sys } = await handoffDir($)
+    path = dir + sep + day + '-' + hm + '.md'
     await $.fs.write(path, text)
     lastHandoff = path
+    histList = undefined // 交接历史 (开着的话) 下次重画时列出这一份
     // 下一个新会话 (或 /clear) 自动填好: 按项目记下这一份; 路径带空白时 @ 引用会断开, 连全文一起记下, 到时候填全文
     try {
       const root = await projectDir($)
       const next = ((await $.store.get('handoffNext')) as any) ?? {}
       next[root] = { path, at: await $.clock.now(), ...(/\s/.test(path) ? { text } : {}) }
+      clearReady = next[root]
       await $.store.set('handoffNext', next)
     } catch {}
     const home = await homeDir($, sys)
@@ -2359,7 +2644,7 @@ export const register: Register = on => {
       await $.command.register({
         name: 'hud',
         description: S().cmd.description,
-        argumentHint: '[full|compact|hide|agents|crab|lang|handoff]',
+        argumentHint: '[full|compact|hide|agents|crab|lang|handoff|history]',
         immediate: true,
       })
     } catch (err) {
@@ -2391,6 +2676,11 @@ export const register: Register = on => {
       await setLangPref($, pref)
       const name = C().langName[getLang()] ?? getLang()
       return { text: pref === 'auto' ? C().langAuto(name) : C().lang(name) }
+    }
+    // /hud history: 交接历史 (要在 handoff 前面判断: "交接历史" 也以 "交接" 开头)
+    if (/^(history|hist|历史|交接历史)/.test(arg)) {
+      await openHistory($, false)
+      return { text: C().historyOpened }
     }
     // /hud handoff: 写一份交接提示词 (和面板上的 [交接] 一样), 后台写, 写好弹 toast
     if (/^(handoff|hand-off|交接)/.test(arg)) {
@@ -2487,6 +2777,7 @@ export const register: Register = on => {
     const src = String((e as any).source ?? '')
     const path = String((e as any).transcript_path ?? '')
     if (src === 'resume' || src === 'fork') resumeCtx = (e as any).context_tokens
+    if (src !== 'compact') clearReady = undefined // 换了一段对话: [清空并继续] 不再出现 (压缩还是同一段)
     if (src === 'clear') {
       resumeCtx = undefined
       milestonePrimed = false // 花费从 0 重新算, 里程碑提示也重新开始
@@ -2721,6 +3012,12 @@ export const register: Register = on => {
   on('ui.render', { component: 'Pane', requestId: AGENTS_PANE }, async ($, e) => {
     const els: any = $.ui.resolve(e)
     return buildAgentsPane($, els, (e.props as any).bodyColumns ?? 60)
+  })
+
+  // 交接历史 (v1.3; 终端和客户端都画)
+  on('ui.render', { component: 'Pane', requestId: HIST_PANE }, async ($, e) => {
+    const els: any = $.ui.resolve(e)
+    return buildHistoryPane($, els, (e.props as any).bodyColumns ?? 60, e.surface)
   })
 
   on('session.measure', async ($, e, next) => {

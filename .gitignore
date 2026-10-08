@@ -2,11 +2,8 @@
 .claude-plugin/types/
 # 改动前手动留的旧版本备份; 有了 git 历史, 不进仓库
 _backup/
-# 预览脚本生成的页面、动图的中间帧
-tools/out/
-tools/demo/out/
-# 检查脚本用的本机禁词表 (含本机路径和名字)
-tools/demo/banned.local.txt
+# 预览、录动图、螃蟹图鉴的脚本只留在本机, 不进仓库 (1.3.0 起)
+tools/
 node_modules/
 # 设计笔记只留在本机, 不公开
 doc/

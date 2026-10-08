@@ -188,19 +188,16 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
     parts.push(`<g>${glance}${shown.join('')}</g>`)
   }
 
-  // 头边汗珠 (平滑地往下掉、慢慢变淡): 上下文告急, 或额度 冒汗 / 慌张
-  //   闲着时慌张不画在头边 (会夹在挥起的钳子旁边): 改成从头顶两侧往外上方甩进顶上那一行, 每 600ms 一次
-  if (panicIdle) {
+  // 头边汗珠 (平滑地往下掉、慢慢变淡): 上下文告急, 或额度 冒汗
+  //   慌张不画在头边 (v0.22 闲着时, v1.3 干活时也是): 从头顶两侧往外上方甩进顶上那一行, 每 600ms 一次
+  if (mood === 'panic' && mode !== 'celebrate') {
     const fling = (xs: string[]) =>
       `<rect width="1" height="1" fill="${C.sweat}">${steps('x', xs, 0.6)}${steps('y', ['-1', '-2', '-2', '-2', '-2', '-2', '-2', '-2'], 0.6)}${steps('opacity', ['1', '1', '1', '0', '0', '0', '0', '0'], 0.6)}</rect>`
     fx.push(fling(['2', '1', '0', '0', '0', '0', '0', '0']), fling(['9', '10', '11', '11', '11', '11', '11', '11']))
-  } else if ((st.heat !== 'ok' || mood === 'sweat' || mood === 'panic') && mode !== 'celebrate')
+  } else if ((st.heat !== 'ok' || mood === 'sweat') && mode !== 'celebrate')
     fx.push(`<rect x="1" y="0" width="1" height="1" fill="${C.sweat}">${glide('y', ['0', '2'], 0.9, { linear: true })}${glide('opacity', ['1', '1', '0'], 0.9, { linear: true })}</rect>`)
-  // 慌张的 "!": 闲置且右侧空着 -> 右侧竖一个大 "!"; 否则头顶上方一个红点闪
-  if (mood === 'panic' && mode !== 'celebrate') {
-    if (panicIdle && zoneFree) fx.push(`<g>${steps('opacity', ['1', '0.35'], 0.5)}${px(14, -1, C.alarm, 1, 3)}${px(14, 3, C.alarm)}</g>`)
-    else fx.push(`<rect x="1" y="-1" width="1" height="1" fill="${C.alarm}">${steps('opacity', ['1', '0'], 0.5)}</rect>`)
-  }
+  // 慌张的 "!": 闲置且右侧空着 -> 右侧竖一个大 "!" (v1.3: 其余时候不再在头顶闪红点, 和终端一样)
+  if (panicIdle && zoneFree) fx.push(`<g>${steps('opacity', ['1', '0.35'], 0.5)}${px(14, -1, C.alarm, 1, 3)}${px(14, 3, C.alarm)}</g>`)
 
   // 右边 3 像素宽的道具区 (x 13-15); 有子代理时让给小螃蟹. 移动的东西 (扫描线、地球、齿轮、泡泡) 平滑地滑
   if (mode === 'celebrate') {

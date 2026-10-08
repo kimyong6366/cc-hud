@@ -1,5 +1,5 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, receiptText, setLang, doingText, workflowName } from './register'
+import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, receiptText, setLang, doingText, workflowName, handoffBrief } from './register'
 import { crabSvg, dashSvg } from './desktop'
 import { TABLES } from './strings'
 
@@ -30,14 +30,16 @@ const LINUX: Sys = {
 }
 const WSL: Sys = { cwd: '/home/me/my-app', env: { HOME: '/home/me', WSL_DISTRO_NAME: 'Ubuntu-22.04' }, broken: ['wslview'] }
 
-type Calls = { run: string[][]; cmd: string[]; dirs: string[]; toasts: string[]; opens: any[]; clock?: any; forks: string[]; copies: string[]; writes: Array<{ path: string; text: string }>; fills: Array<{ text: string; mode: string }> }
+type Calls = { run: string[][]; cmd: string[]; dirs: string[]; toasts: string[]; opens: any[]; closes: string[]; clock?: any; forks: string[]; copies: string[]; writes: Array<{ path: string; text: string }>; fills: Array<{ text: string; mode: string }>; lists: string[] }
 // 新功能的测试用: 可变的用量 / 子代理列表 / 手动拨的时钟 (只替换 clock.now, 定时器仍是空的)
 // mockClock: 用 mock.clock(on) 从这个时刻起的内存时钟代替下面三个假时钟 (定时器会真的走, 测试拨 calls.clock)
 // toolGate: 工具调用等它放行才结束 (测 "工具在跑时" 用)
 // lang: 存进 store 的界面语言 (默认 zh, 旧测试都按中文写; null = 不存, 走 auto -> 英文)
 // fork / copyOk / writeFails / language: 交接功能用 ($.model.fork 的回答、剪贴板成不成、写文件抛不抛错、Claude 的 language 设置)
 // fillResult: $.prompt.fill 的回答 (默认填进去了; 可以模拟对话框挡着 / 没有输入框)
-type Opts = { fillResult?: (e: any) => any; usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
+// handoffs: 交接文件夹 (<配置目录>/handoffs/my-app/) 里的东西, 给 $.fs.list / $.fs.read 用 (不给 = 文件夹不存在); draft: 输入框里已经打的字
+type HandoffFile = { name: string; text?: string; mtimeMs?: number; kind?: 'file' | 'dir' }
+type Opts = { handoffs?: () => HandoffFile[] | undefined; draft?: string; fillResult?: (e: any) => any; usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
 
 function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
   // 存储用内存里的假存储: 测试里的 /hud top 不能写进用户真实的偏好文件
@@ -57,7 +59,26 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
     calls.opens.push(e)
     return { value: { isPlaced: true } }
   })
-  on('ui.close', async () => ({ value: undefined }))
+  on('ui.close', async ($: any, e: any) => {
+    calls.closes.push(String(e?.id ?? ''))
+    return { value: undefined }
+  })
+  // 交接文件夹: 路径按结尾认 (测试引擎可能把 C:\ 路径规整成本机写法)
+  const inHandoffs = (p: unknown) => /[\\/]handoffs[\\/]my-app$/.test(String(p ?? '').replace(/[\\/]+$/, ''))
+  on('fs.list', async ($: any, e: any) => {
+    calls.lists.push(String(e?.path ?? ''))
+    const files = opts.handoffs?.()
+    if (!files || !inHandoffs(e?.path)) throw new Error('ENOENT: no such file or directory')
+    return { value: files.map(f => ({ name: f.name, kind: f.kind ?? 'file', size: (f.text ?? '').length, mtimeMs: f.mtimeMs ?? 0, isLink: false })) }
+  })
+  on('fs.read', async ($: any, e: any, next: any) => {
+    const path = String(e?.path ?? '')
+    const cut = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'))
+    const f = opts.handoffs?.()?.find(h => h.name === path.slice(cut + 1))
+    if (f && inHandoffs(path.slice(0, cut))) return { value: f.text ?? '' }
+    return next(e)
+  })
+  on('prompt.read', async () => ({ value: { text: opts.draft ?? '', cursor: (opts.draft ?? '').length } }))
   on('turn.start', async ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', async () => ({ text: '' }))
   on('tool.call', async () => {
@@ -125,7 +146,7 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
 }
 
 async function start($: any, on: any, sys: Sys = WIN, opts: Opts = {}) {
-  const calls: Calls = { run: [], cmd: [], dirs: [], toasts: [], opens: [], forks: [], copies: [], writes: [], fills: [] }
+  const calls: Calls = { run: [], cmd: [], dirs: [], toasts: [], opens: [], closes: [], forks: [], copies: [], writes: [], fills: [], lists: [] }
   mocks(on, calls, sys, opts)
   await $.session.start({ cwd: sys.cwd } as any)
   return calls
@@ -635,8 +656,9 @@ test('大螃蟹的精灵 (散步道里那只) 的情绪: 悠闲戴墨镜、冒�
   expect(panicIdle.big.some(px => at(px, 13, 0) === C.alarm && at(px, 13, 3) === C.alarm)).toBe(true)
   // 举钳: 左钳竖在 x=0 的第 0-1 行
   expect(panicIdle.big.every(px => at(px, 0, 0) === C.body || at(px, 0, 1) === C.body)).toBe(true)
+  // v1.3 (A): 干活时慌张也不在头边画红条 (汗珠甩进天空行, 见 v1.3 的测试)
   const panicWork = previewPixels('Bash', { working: true, mood: 'panic' })
-  expect(panicWork.big.some(px => at(px, 1, 0) === C.alarm)).toBe(true)
+  expect(panicWork.big.some(px => at(px, 1, 0) === C.alarm)).toBe(false)
   // 庆祝时不画情绪标记
   expect(previewPixels('', { working: false, celebrating: true, mood: 'panic' }).big.some(px => at(px, 1, 0) === C.alarm)).toBe(false)
   const svg = (mood: any, mode: any = 'idle') => crabSvg({ mode, kind: 'think', heat: 'ok', agents: 0, mood }, 5)
@@ -644,7 +666,7 @@ test('大螃蟹的精灵 (散步道里那只) 的情绪: 悠闲戴墨镜、冒�
   expect(svg('normal')).not.toContain('#09090b')
   expect(svg('sweat')).toContain('#60a5fa')
   expect(svg('panic')).toContain('#ef4444')
-  expect(svg('panic', 'work')).toContain('#ef4444')
+  expect(svg('panic', 'work')).not.toContain('#ef4444')
 })
 
 test('每轮收据: 引擎那行原样保留, 后面追加花费/改文件/工具次数; 对不上的行不显示', async ($, on) => {
@@ -1097,7 +1119,8 @@ test('客户端仪表盘: 5小时/本周 的条上有亮色细竖线刻度 (略�
   }
   expect(seenRed.has('4d12h 用完')).toBe(true)
   // 负路径: 配速正常 -> 没有 "用完", 没有红字; 刻度照样有
-  usage = { ...USAGE }
+  //   (重置时间按这个测试自己的 t 算: USAGE 的是文件加载时算的, 机器忙时跑到这里已经过了一分多钟, 会显示 1h59m)
+  usage = { ...USAGE, rateLimits: [lim('five_hour', 23.5, t + 2 * H), lim('seven_day', 12, t + 3 * 24 * H)] }
   const ok = await dash(140)
   expect(ok).toContain('2h00m')
   expect(ok.includes('用完')).toBe(false)
@@ -2931,7 +2954,7 @@ test('panic in the crab strip: the claws flail in turn (never both up), sweat is
   expect(r.frames.some(fr => fr.px.flat().includes(ALARM))).toBe(true)
 })
 
-test('panic in the panel sprite: claws take turns and no sweat drop sits beside them; while working the old head-side mark stays', () => {
+test('panic in the panel sprite: claws take turns and no sweat drop sits beside them; while working there is no head-side mark either (v1.3)', () => {
   const at = (px: number[][], x: number, y: number) => px[y]?.[x]
   const p = previewPixels('', { working: false, mood: 'panic' })
   const B = p.colors.body
@@ -2939,7 +2962,8 @@ test('panic in the panel sprite: claws take turns and no sweat drop sits beside 
   expect(p.big.some(px => at(px, 0, 0) === B) && p.big.some(px => at(px, 11, 0) === B)).toBe(true) // 两只轮流举
   expect(p.big.some(px => at(px, 1, 0) === p.colors.sweat || at(px, 1, 1) === p.colors.sweat)).toBe(false)
   const work = previewPixels('Bash', { working: true, mood: 'panic' })
-  expect(work.big.some(px => at(px, 1, 0) === p.colors.alarm)).toBe(true)
+  expect(work.big.some(px => at(px, 1, 0) === p.colors.alarm || at(px, 1, 1) === p.colors.alarm)).toBe(false)
+  expect(work.big.some(px => at(px, 1, 0) === p.colors.sweat || at(px, 1, 1) === p.colors.sweat)).toBe(false)
 })
 
 test('panic on the desktop: the claws flail through a half-raised pose, sweat is flung into the headroom, and the eyes no longer shake', () => {
@@ -3221,4 +3245,338 @@ test('handoff auto-fill: when the file path has a space (an @ mention would brea
   expect(calls.fills.length).toBe(1)
   expect(calls.fills[0]?.text.startsWith('# Handoff: my-app')).toBe(true)
   expect(calls.fills[0]?.text).toContain('HANDOFF BODY')
+})
+
+// ================= v1.3: handoff history (/hud history, [history], desktop "Handoff history") =================
+// 这个项目存过的交接 (<配置目录>/handoffs/<项目>/) 列在一个面板里: 最新的在上面, 最多 9 份 (数字键 1-9 填入)
+const p2 = (n: number) => String(n).padStart(2, '0')
+const hname = (ms: number) => {
+  const d = new Date(ms)
+  return d.getFullYear() + '-' + p2(d.getMonth() + 1) + '-' + p2(d.getDate()) + '-' + p2(d.getHours()) + p2(d.getMinutes()) + '.md'
+}
+const hm = (ms: number) => p2(new Date(ms).getHours()) + ':' + p2(new Date(ms).getMinutes())
+const DAY0 = (() => {
+  const d = new Date(T0)
+  d.setHours(0, 0, 0, 0)
+  return d.getTime()
+})()
+const H_TODAY = DAY0 + 60_000 // 今天 00:01
+const H_YDAY = DAY0 - 5.5 * 3600_000 // 昨天 18:30
+const H_OLD = DAY0 - 10 * 86400_000 + 9 * 3600_000 + 12 * 60_000 // 10 天前 09:12
+const HDIR = 'C:\\Users\\me\\.claude\\handoffs\\my-app\\'
+const HFILES: HandoffFile[] = [
+  { name: hname(H_YDAY), text: '# 交接：my-app（feature/pay）· x\n\n## Goal\n做支付\n\n## Next steps\n1. Start by 修好退款按钮\n2. 再说\n' },
+  { name: 'notes.txt', text: 'not a handoff' },
+  { name: 'old', kind: 'dir' },
+  {
+    name: hname(H_TODAY),
+    text: '# Handoff: my-app (main) · x\n(To reopen the original session instead: claude --resume abc)\n\n## Goal (what the user wants)\nShip the coupon field\n\n## Next steps (concrete and in order)\n1. Start by adding the coupon input to checkout\n2. Then run the tests\n',
+  },
+  { name: hname(H_OLD), text: '# Handoff: my-app · x\n\n## Goal\n- Clean up the logs\n' },
+]
+const HIST = { ...EN, mockClock: T0, handoffs: () => HFILES }
+async function mountHist($: any, surface: 'terminal' | 'desktop', cols: number) {
+  return $.ui.mount({
+    plugin: 'cc-hud',
+    surface,
+    component: 'Pane',
+    requestId: 'hud-handoffs',
+    viewport: { columns: 160, rows: 40, isFullscreen: true },
+    props: { title: 'Handoffs', isFocused: true, bodyColumns: cols, placement: 'dock', scroll: { top: 0, bodyRows: 30, totalRows: 10 }, view: {} },
+  } as any)
+}
+const texts = async (ui: any) => ((await ui.findAll({ type: 'Text' })) as any[]).map(t => String(t.text))
+// 一行画出来有多宽: 里面的字 + 终端按钮 (画成 "[ label ]", 比文字多 4 格)
+const histW = (n: any): number =>
+  typeof n === 'string' ? dwT(n) : !n ? 0 : n.type === 'Button' ? dwT(String(n.props?.label ?? '')) + 4 : ((n.children ?? []) as any[]).reduce((w: number, c: any) => w + histW(c), 0)
+const lineW = async (ui: any, key: string) => histW(await ui.find({ key }))
+
+test('handoffBrief: the branch from the title line and the first next step without "Start by"; falls back to the goal', () => {
+  expect(handoffBrief(HFILES[3]!.text!)).toEqual({ branch: 'main', next: 'adding the coupon input to checkout' })
+  expect(handoffBrief(HFILES[0]!.text!)).toEqual({ branch: 'feature/pay', next: '修好退款按钮' })
+  expect(handoffBrief(HFILES[4]!.text!)).toEqual({ branch: '', next: 'Clean up the logs' })
+  expect(handoffBrief('## 下一步\n- **先** 跑测试')).toEqual({ branch: '', next: '先 跑测试' })
+  expect(handoffBrief('')).toEqual({ branch: '', next: '' })
+})
+
+test('/hud history opens the handoff history pane (also 历史 / 交接历史); it never starts writing a new handoff', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  for (const args of ['history', '历史', '交接历史']) {
+    const r: any = await $.command.run({ command: 'hud', args } as any)
+    expect(String(r?.text ?? '')).toMatch(/handoff history/i)
+  }
+  await calls.clock.settle()
+  expect(calls.forks.length).toBe(0)
+  const opened = calls.opens.filter((o: any) => o.id === 'hud-handoffs')
+  expect(opened.length).toBe(3)
+  expect(opened[0]).toMatchObject({ id: 'hud-handoffs', focus: true, closeOnEscape: true })
+  // /hud handoff 还是写交接
+  await $.command.run({ command: 'hud', args: 'handoff' } as any)
+  await calls.clock.settle()
+  expect(calls.forks.length).toBe(1)
+})
+
+test('handoff history: newest first, only .md files; each row has its time, branch and first next step, a numbered fill button and an open button', async ($, on) => {
+  await start($, on, WIN, HIST)
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  const all = (await texts(ui)).join('\n')
+  expect(all).toContain('3 saved, newest first')
+  const fills = ((await ui.findAll({ type: 'Button' })) as any[]).filter(b => /^hist-fill-/.test(b.key ?? ''))
+  expect(fills.map(b => b.key)).toEqual(['hist-fill-0', 'hist-fill-1', 'hist-fill-2'])
+  expect(fills.map(b => b.props.hotkey)).toEqual(['1', '2', '3'])
+  expect(fills.map(b => b.props.label)).toEqual(['1 fill in', '2 fill in', '3 fill in'])
+  expect(await btn(ui, 'hist-open-0')).toBeDefined()
+  const rows = ((await ui.findAll({ type: 'Box' })) as any[]).filter(b => /^hist-row-\d$/.test(b.key ?? ''))
+  expect(rows.length).toBe(3)
+  for (const b of rows) expect(await lineW(ui, b.key)).toBeLessThanOrEqual(120)
+  // 每行: 时间、分支、下一步 (宽面板一行放下)
+  expect(all).toContain('today ' + hm(H_TODAY))
+  expect(all).toContain('yesterday ' + hm(H_YDAY))
+  expect(all).toContain(hname(H_OLD).slice(5, 10) + ' ' + hm(H_OLD))
+  expect(all).toContain('adding the coupon input to checkout')
+  expect(all).toContain('修好退款按钮')
+  expect(all).toContain('feature/pay')
+  expect(all.indexOf('today ' + hm(H_TODAY)) < all.indexOf('yesterday ' + hm(H_YDAY))).toBe(true)
+  expect(all).not.toContain('not a handoff')
+  expect(await btn(ui, 'hist-folder')).toBeDefined()
+  await ui.unmount()
+})
+
+test('handoff history: pressing fill puts "@<file> Continue from this handoff" in the prompt, closes the pane and says which one', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  await ui.press({ key: 'hist-fill-1' })
+  expect(calls.fills).toEqual([{ text: '@' + HDIR + hname(H_YDAY) + ' Continue from this handoff', mode: 'replace' }])
+  expect(calls.closes).toContain('hud-handoffs')
+  expect(calls.toasts.some(t => t.startsWith('Filled in the handoff from yesterday ' + hm(H_YDAY)))).toBe(true)
+  await ui.unmount()
+})
+
+test('handoff history: text already in the prompt is kept (the handoff line goes first)', async ($, on) => {
+  const calls = await start($, on, WIN, { ...HIST, draft: 'also check the refunds' })
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  await ui.press({ key: 'hist-fill-0' })
+  expect(calls.fills[0]?.text).toBe('@' + HDIR + hname(H_TODAY) + ' Continue from this handoff\nalso check the refunds')
+  await ui.unmount()
+})
+
+test('handoff history: picking the handoff that was waiting for the next session uses it up, so /clear does not fill it again', async ($, on) => {
+  const root = 'D:\\work\\my-app'
+  const calls = await start($, on, WIN, { ...HIST, store: { handoffNext: { [root]: { path: HDIR + hname(H_TODAY), at: T0 - 60_000 } } } })
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  await ui.press({ key: 'hist-fill-0' })
+  await ui.unmount()
+  expect(calls.fills.length).toBe(1)
+  await newSession($, calls, 'clear')
+  expect(calls.fills.length).toBe(1)
+})
+
+test('handoff history: when the prompt box refuses (a dialog, or the desktop app), the pane stays open and says to press open', async ($, on) => {
+  const calls = await start($, on, WIN, { ...HIST, fillResult: () => ({ isFilled: false, refusal: 'no_composer' }) })
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'desktop', 120)
+  await ui.press({ key: 'hist-fill-0' })
+  expect(calls.fills.length).toBe(0)
+  expect(calls.closes).not.toContain('hud-handoffs')
+  expect(calls.toasts.some(t => /Couldn't fill in the prompt/.test(t))).toBe(true)
+  await ui.unmount()
+})
+
+test('handoff history: open opens the file, open folder opens the folder (cmd start on Windows)', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  await ui.press({ key: 'hist-open-2' })
+  await ui.press({ key: 'hist-folder' })
+  const starts = calls.run.filter(a => a[0] === 'cmd.exe')
+  expect(starts).toEqual([
+    ['cmd.exe', '/d', '/c', 'start', 'cc-hud', HDIR + hname(H_OLD)],
+    ['cmd.exe', '/d', '/c', 'start', 'cc-hud', HDIR.slice(0, -1)],
+  ])
+  await ui.unmount()
+})
+
+test('handoff history: at most the 9 newest (digits 1-9); the header says how many there are', async ($, on) => {
+  const many: HandoffFile[] = Array.from({ length: 12 }, (_, i) => ({ name: hname(DAY0 - i * 3600_000 - 60_000), text: '## Next steps\n1. Start by step ' + i + '\n' }))
+  await start($, on, WIN, { ...HIST, handoffs: () => many })
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  const fills = ((await ui.findAll({ type: 'Button' })) as any[]).filter(b => /^hist-fill-/.test(b.key ?? ''))
+  expect(fills.map(b => b.props.hotkey)).toEqual(['1', '2', '3', '4', '5', '6', '7', '8', '9'])
+  const all = (await texts(ui)).join('\n')
+  expect(all).toContain('12 saved, newest 9 shown')
+  expect(all).toContain('step 0')
+  expect(all).toContain('step 8')
+  expect(all).not.toContain('step 9')
+  await ui.unmount()
+})
+
+test('handoff history: no folder yet / an empty folder says how to write one', async ($, on) => {
+  let folder: HandoffFile[] | undefined
+  await start($, on, WIN, { ...EN, mockClock: T0, handoffs: () => folder })
+  for (const now of [undefined, [] as HandoffFile[]]) {
+    folder = now
+    await $.command.run({ command: 'hud', args: 'history' } as any)
+    const ui = await mountHist($, 'terminal', 120)
+    expect((await texts(ui)).join('\n')).toContain('No handoffs for this project yet')
+    expect(((await ui.findAll({ type: 'Button' })) as any[]).filter(b => /^hist-fill-/.test(b.key ?? '')).length).toBe(0)
+    await ui.unmount()
+  }
+})
+
+test('handoff history: a path with a space fills in the handoff text itself', async ($, on) => {
+  const sys: Sys = { cwd: CWD, env: { USERPROFILE: 'C:\\Users\\Jo Smith' } }
+  const calls = await start($, on, sys, HIST)
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const ui = await mountHist($, 'terminal', 120)
+  await ui.press({ key: 'hist-fill-0' })
+  expect(calls.fills[0]?.text).toBe(HFILES[3]!.text!)
+  await ui.unmount()
+})
+
+test('handoff history: a narrow pane puts the next step on a second line; no line is wider than the pane; Chinese labels', async ($, on) => {
+  await start($, on, WIN, { ...HIST, lang: 'zh' })
+  await $.command.run({ command: 'hud', args: '历史' } as any)
+  for (const cols of [40, 56, 71]) {
+    const ui = await mountHist($, 'terminal', cols)
+    const rows = ((await ui.findAll({ type: 'Box' })) as any[]).filter(b => /^hist-(row-\d+(-2)?|head|foot)$/.test(b.key ?? ''))
+    expect(rows.filter(b => /^hist-row-\d+-2$/.test(b.key)).length).toBe(3)
+    for (const b of rows) expect([b.key, await lineW(ui, b.key)]).toEqual([b.key, Math.min(cols, await lineW(ui, b.key))])
+    const all = (await texts(ui)).join('\n')
+    expect(all).toContain('今天 ' + hm(H_TODAY))
+    expect(all).toContain('昨天 ' + hm(H_YDAY))
+    expect(all).toContain('共 3 份')
+    expect((await btn(ui, 'hist-fill-0'))?.props.label).toBe('1 填入')
+    expect((await btn(ui, 'hist-open-0'))?.props.label).toBe('打开')
+    await ui.unmount()
+  }
+})
+
+test('toolbar: [history] sits after [handoff] in the full panel (not in the one-line panel); pressing it opens the handoff history', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  const ui = await mountHint($, 'terminal', 140)
+  expect((await btn(ui, 'btn-history'))?.props.label).toBe('history')
+  const tree = JSON.stringify(await ui.drawn())
+  expect(tree.indexOf('btn-handoff') < tree.indexOf('btn-history')).toBe(true)
+  await ui.press({ key: 'btn-history' })
+  expect(calls.opens.filter((o: any) => o.id === 'hud-handoffs').length).toBe(1)
+  await ui.unmount()
+  await $.command.run({ command: 'hud', args: 'compact' } as any)
+  const one = await mountHint($, 'terminal', 140)
+  expect(await btn(one, 'btn-settings')).toBeDefined()
+  expect(await btn(one, 'btn-history')).toBeUndefined()
+  await one.unmount()
+})
+
+test('desktop toolbar: a native "Handoff history" button right after Handoff opens the same pane', async ($, on) => {
+  const calls = await start($, on, WIN, HIST)
+  const ui = await mountDesktop($, 120)
+  const b = await btn(ui, 'btn-history')
+  expect(b?.props.label).toBe('Handoff history')
+  expect(b?.props.plain).toBeUndefined()
+  const tree = JSON.stringify(await ui.drawn())
+  expect(tree.indexOf('btn-handoff') < tree.indexOf('btn-history')).toBe(true)
+  await ui.press({ key: 'btn-history' })
+  expect(calls.opens.filter((o: any) => o.id === 'hud-handoffs').length).toBe(1)
+  await ui.unmount()
+  const pane = await mountHist($, 'desktop', 100)
+  expect((await btn(pane, 'hist-fill-0'))?.props.label).toBe('Fill in')
+  expect((await btn(pane, 'hist-open-0'))?.props.label).toBe('Open')
+  await pane.unmount()
+})
+
+// ================= v1.3: [clear & continue] after a handoff =================
+// 这个会话写过交接之后, [交接] 后面多一个 [清空并继续]: 点了就跑 /clear, 清空后的会话照常自动填好交接 (只在终端)
+test('clear & continue: shows up after a handoff is written (toolbar and one-line panel); pressing it runs /clear and the cleared session gets the handoff line', async ($, on) => {
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0 })
+  let ui = await mountHint($, 'terminal', 140)
+  expect(await btn(ui, 'btn-clear-go')).toBeUndefined()
+  await ui.unmount()
+  await handoffNow($, calls)
+  expect(calls.toasts.find(t => t.startsWith('Handoff copied'))).toMatch(/\[clear & continue\]/)
+  ui = await mountHint($, 'terminal', 140)
+  expect((await btn(ui, 'btn-clear-go'))?.props.label).toBe('clear & continue')
+  const tree = JSON.stringify(await ui.drawn())
+  expect(tree.indexOf('btn-handoff') < tree.indexOf('btn-clear-go') && tree.indexOf('btn-clear-go') < tree.indexOf('btn-history')).toBe(true)
+  await ui.unmount()
+  await $.command.run({ command: 'hud', args: 'compact' } as any)
+  ui = await mountHint($, 'terminal', 140)
+  expect(await btn(ui, 'btn-clear-go')).toBeDefined()
+  await ui.press({ key: 'btn-clear-go' })
+  await ui.unmount()
+  expect(calls.cmd).toContain('clear')
+  // 引擎跑 /clear 时会发 SessionStart (source: clear): 输入框填好交接那一行; 按钮不再出现
+  await newSession($, calls, 'clear')
+  expect(calls.fills.map(f => f.text)).toEqual([expect.stringMatching(HANDOFF_LINE)])
+  ui = await mountHint($, 'terminal', 140)
+  expect(await btn(ui, 'btn-clear-go')).toBeUndefined()
+  await ui.unmount()
+})
+
+test('clear & continue: even when that handoff was already filled in once (from the history), the cleared session still gets it', async ($, on) => {
+  let calls: Calls | undefined
+  const written = () => (calls?.writes ?? []).map(w => ({ name: String(w.path).split(/[\\/]/).pop() ?? '', text: w.text }))
+  calls = await start($, on, WIN, { ...EN, mockClock: T0, handoffs: written })
+  await handoffNow($, calls)
+  await $.command.run({ command: 'hud', args: 'history' } as any)
+  const pane = await mountHist($, 'terminal', 120)
+  await pane.press({ key: 'hist-fill-0' })
+  await pane.unmount()
+  expect(calls.fills.length).toBe(1)
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-clear-go' })
+  await ui.unmount()
+  await newSession($, calls, 'clear')
+  expect(calls.fills.length).toBe(2)
+  expect(calls.fills[1]?.text).toMatch(HANDOFF_LINE)
+})
+
+test('clear & continue: not on the desktop (the app cannot fill the prompt); gone in a new or resumed session', async ($, on) => {
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0 })
+  await handoffNow($, calls)
+  const d = await mountDesktop($, 120)
+  expect(await btn(d, 'btn-clear-go')).toBeUndefined()
+  await d.unmount()
+  for (const src of ['startup', 'resume']) {
+    await handoffNow($, calls)
+    await newSession($, calls, src)
+    const ui = await mountHint($, 'terminal', 140)
+    expect([src, await btn(ui, 'btn-clear-go')]).toEqual([src, undefined])
+    await ui.unmount()
+  }
+})
+
+// ================= v1.3: panic while working = sweat flung into the sky row too (option A); no red bar beside the head =================
+test('panic while working, in the crab strip: no red bar and no sweat beside the head; sweat is flung up into the sky row, outside the head', () => {
+  for (const tool of ['bash', 'read', 'think'] as const) {
+    const r = previewLane({ w: 80, sky: true, frames: 60, working: true, tool, fine: true, mood: 'panic' })
+    for (const fr of r.frames) expect(fr.px.flat().includes(ALARM) ? `${tool}: red in the strip` : 'ok').toBe('ok')
+    // 螃蟹那几行里、螃蟹自己的 12 列 (右边的道具不算: 读文件那张纸的扫描线也是这个蓝色)
+    for (const fr of r.frames) expect(fr.px.slice(2).some(row => row.slice(fr.bx, fr.bx + 12).includes(SWEAT)) ? `${tool}: sweat beside the head` : 'ok').toBe('ok')
+    const flung = r.frames.flatMap(fr => fr.px.slice(0, 2).flatMap(row => row.map((c, x) => (c === SWEAT ? x - fr.bx : -99)).filter(x => x > -99)))
+    expect([tool, flung.length > 0]).toEqual([tool, true])
+    expect([tool, flung.every(x => x <= 2 || x >= 9)]).toEqual([tool, true])
+  }
+})
+
+test('panic while working: no sweat is flung while the crab is up in the sky row (the send-a-message jump)', () => {
+  const r = previewLane({ w: 80, sky: true, frames: 40, working: true, tool: 'bash', fine: true, mood: 'panic', jumpAt: 8 })
+  const lifted = r.frames.filter(fr => fr.px.slice(0, 2).flat().includes(BODY))
+  expect(lifted.length > 0).toBe(true)
+  for (const fr of lifted) expect(fr.px.slice(0, 2).flat().includes(SWEAT) ? 'sweat on the jumping crab' : 'ok').toBe('ok')
+})
+
+test('panic while working, on the desktop: no red dot; the sweat is flung into the headroom instead of sliding down beside the head', () => {
+  for (const kind of ['bash', 'think']) {
+    const svg = deskCrab({ mood: 'panic', mode: 'work', kind })
+    expect(svg).not.toContain('#ef4444')
+    expect(svg).not.toMatch(/attributeName="y" values="0;2"/)
+    expect(svg).toMatch(/fill="#60a5fa"[^>]*>(<animate[^>]*>)*<animate attributeName="y" values="-1;-2;-2/)
+  }
+  // 负路径: 只是冒汗 (不慌张) 时, 头边那颗汗滴还在
+  expect(deskCrab({ mood: 'sweat', mode: 'work', kind: 'bash' })).toMatch(/attributeName="y" values="0;2"/)
 })

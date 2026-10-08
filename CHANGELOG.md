@@ -4,6 +4,22 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Notable changes to cc-hud, newest first. Each version matches `version` in `cc-hud/.claude-plugin/plugin.json`.
 
+## 1.3.0 (2026-10-08)
+
+### Added
+
+- **Handoff history.** `[history]` on the toolbar, or `/hud history` (also `/hud 历史`), opens a pane that lists this project's saved handoffs, newest first, up to 9.
+  - Each row shows when it was written, the branch, and its first next step.
+  - Press a digit (1-9) or click `fill in`: the prompt box gets `@<that handoff> Continue from this handoff`, and anything you had typed stays below it. `open` opens the file; `open folder` shows them all.
+  - Picking the handoff that was waiting for your next session uses it up, so `/clear` doesn't fill it in a second time.
+  - The desktop app gets a native **Handoff history** button. It probably won't let a mod fill its prompt box, so use **Open** there.
+- **`[clear & continue]`.** Once this conversation has a handoff, this button appears after `[handoff]` (terminal only). Click it and cc-hud runs `/clear` for you; the cleared session gets the handoff line, even if you already used that handoff once.
+
+### Changed
+
+- **A panicking crab no longer flashes a red bar beside its head while it works.** Like an idle panicking crab, it now flings sweat up into the row above its head. The red "!" now only appears beside an idle panicking crab. The desktop crab matches.
+- When the terminal isn't fullscreen, the toolbar leaves out `[history]` (clicks don't reach it there) and keeps room for the hint.
+
 ## 1.2.0 (2026-10-08)
 
 ### Added

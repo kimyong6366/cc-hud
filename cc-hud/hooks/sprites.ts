@@ -196,7 +196,6 @@ export function scenePx(s: Scene, f: number): Px {
   const sub = s.sub
   let shades = false
   let bigBang = false // 右侧的大 "!"
-  let panicIdle = false // 闲着时慌张: 头边不画汗滴 (会夹在举起的钳子旁边); 散步道里汗珠甩进天空行 (lanePx)
 
   if (s.hop !== undefined && s.hop >= 0 && s.hop < JUMP_FRAMES) {
     // 散步道: 发出消息那一跳 (画布只有 6 像素高, 没法整只往上移): 蹲 -> 腾空 (不画腿) -> 落地
@@ -288,7 +287,6 @@ export function scenePx(s: Scene, f: number): Px {
     o.armR = swap ? 'mid' : 'up'
     o.legs = f % 4
     bigBang = zoneFree
-    panicIdle = true
   } else if (s.sleeping) {
     o.eyes = 'closed'
     o.bob = sub !== undefined ? Math.floor(sub / BREATH) % 2 : Math.floor(f / 8) % 2 // 慢慢呼吸 (散步道里每 2 秒换一下, 更慢更匀)
@@ -334,16 +332,11 @@ export function scenePx(s: Scene, f: number): Px {
     put(p, 13, 1, c)
     put(p, 13, 3, c)
   }
-  // 头边 (x=1, 第 0-1 行, 任何姿势下都空着): 上下文告急 / 冒汗 -> 汗滴; 慌张 -> 汗滴和红色 "!" 交替
-  if (!s.celebrating && !panicIdle) {
-    const sweat = s.pct >= 80 || md === 'sweat' || md === 'panic'
-    if (md === 'panic' && !bigBang && t % 4 >= 2) {
-      put(p, 1, 0, COL.alarm)
-      put(p, 1, 1, COL.alarm)
-    } else if (sweat) {
-      const d = t % 4
-      if (d < 2) put(p, 1, d, COL.sweat)
-    }
+  // 头边 (x=1, 第 0-1 行, 任何姿势下都空着): 上下文告急 / 冒汗 -> 汗滴往下掉
+  //   慌张不画在头边 (v0.22 闲着时、v1.3 干活时也一样): 汗珠甩进天空行 (lanePx); 以前干活时这里和红色 "!" 交替, 看着像身上长了块红的
+  if (!s.celebrating && md !== 'panic' && (s.pct >= 80 || md === 'sweat')) {
+    const d = t % 4
+    if (d < 2) put(p, 1, d, COL.sweat)
   }
   return p
 }
@@ -983,7 +976,7 @@ function blitHalf(hp: Px, src: Px, hx: number, y0 = 0) {
 const KID_WAVE: Array<'A' | 'N' | 'B'> = ['A', 'A', 'A', 'A', 'A', 'N', 'B', 'B', 'B', 'B', 'B', 'N']
 // 3 行版小螃蟹往上跳出去时往外 (左) 漂: 按升了几像素, 最多一格 (2 个半格), 走一条小弧线; 报告的位置不变
 const HOP_DRIFT = [0, -1, -1, -2, -2, -2, -2]
-// 闲着时慌张 (3 行版, 有天空行): 汗珠从头顶两侧往外上方甩出去, 每 600ms 一次, 飞 3 帧 (y 是天空行的 -1 / -2)
+// 慌张 (3 行版, 有天空行; v1.3 起干活时也是): 汗珠从头顶两侧往外上方甩出去, 每 600ms 一次, 飞 3 帧 (y 是天空行的 -1 / -2)
 const PANIC_FLING: Array<Array<[number, number]>> = [
   [[2, -1], [9, -1]],
   [[1, -2], [10, -2]],
@@ -1033,7 +1026,8 @@ export function lanePx(L: Lane, f: number, a: LaneAct, pct: number): Px {
   const big = canvas(L.bw, rows * 2)
   const lift = drawLaneBig(big, L, f, a, pct)
   blitHalf(hp, big, L.hx, top + lift)
-  if (rows === 3 && L.sky && a.md === 'panic' && (L.pose === 'idle' || L.pose === 'sleep')) {
+  // 跳起来 (身体进了天空行) 和庆祝时不甩
+  if (rows === 3 && L.sky && a.md === 'panic' && lift === 0 && L.pose !== 'celebrate' && L.pose !== 'jump') {
     for (const [x, y] of PANIC_FLING[f % 8] ?? []) {
       put(hp, L.hx + 2 * x, top + y, COL.sweat)
       put(hp, L.hx + 2 * x + 1, top + y, COL.sweat)

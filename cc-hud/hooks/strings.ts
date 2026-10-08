@@ -67,6 +67,11 @@ const zh = {
     // 客户端 (桌面 app) 的工具栏: 原生按钮; 面板约 15 秒才刷新一次, 所以不写秒数
     writingDesk: '正在写交接…',
     openHandoff: '打开交接文件',
+    // v1.3: 交接历史 (终端工具栏的按钮 / 客户端的原生按钮)
+    history: '历史',
+    historyDesk: '交接历史',
+    // v1.3: 写完交接后出现: 跑 /clear, 清空后的会话自动填好交接 (只在终端)
+    clearGo: '清空并继续',
     lang: '语言',
     crab: '螃蟹',
     panel: '面板',
@@ -91,7 +96,7 @@ const zh = {
   },
   // 悬停气泡
   tipWord: ' · 小贴士 ',
-  tips: ['/hud agents 打开子代理看板', '/hud crab 关掉或打开散步的螃蟹', '/hud 切换 完整 / 精简 / 隐藏', '/hud handoff 写一份交接提示词', '/hud lang en 切换成英文'],
+  tips: ['/hud agents 打开子代理看板', '/hud crab 关掉或打开散步的螃蟹', '/hud 切换 完整 / 精简 / 隐藏', '/hud handoff 写一份交接提示词', '/hud history 挑一份以前的交接接着干', '/hud lang en 切换成英文'],
   // 每轮收据
   receipt: {
     files: (n: string) => '改 ' + n + ' 个文件',
@@ -114,6 +119,7 @@ const zh = {
     toolMilestone: (n: string) => '本会话第 ' + n + ' 次工具调用，螃蟹给你鼓掌',
     agentsNarrow: (reason: string) => '子代理看板等终端再宽一点才能显示: ' + reason,
     agentsFailed: (err: string) => '子代理看板打不开: ' + err,
+    histFailed: (err: string) => '交接历史打不开: ' + err,
     panelHidden: '用量面板已隐藏（输入 /hud 再打开）',
   },
   window: { five_hour: '5 小时', seven_day: '本周' } as Record<string, string>,
@@ -139,9 +145,10 @@ const zh = {
   },
   // /hud 命令
   cmd: {
-    description: '用量面板 (输入框下方)：完整 → 精简 → 隐藏 循环；/hud agents 子代理看板，/hud crab 开关螃蟹，/hud lang en|zh|auto 切换语言，/hud handoff 写交接提示词',
+    description: '用量面板 (输入框下方)：完整 → 精简 → 隐藏 循环；/hud agents 子代理看板，/hud crab 开关螃蟹，/hud lang en|zh|auto 切换语言，/hud handoff 写交接提示词，/hud history 交接历史',
     registerFailed: (err: string) => 'cc-hud: /hud 注册失败 ' + err,
     agentsOpened: '已打开子代理看板（Esc 关闭）',
+    historyOpened: '已打开交接历史（数字键填入，Esc 关闭）',
     crabOn: '螃蟹散步道已打开（输入框正上方）',
     crabOff: '螃蟹散步道已关闭（/hud crab 再打开）',
     fixed: '终端版面板固定在输入框下方，螃蟹在上方',
@@ -157,8 +164,8 @@ const zh = {
     busy: '交接提示词正在写，稍等',
     title: (project: string, branch: string, date: string) => '# 交接：' + project + (branch ? '（' + branch + '）' : '') + ' · ' + date,
     resume: (id: string) => '（想回到原来的会话：claude --resume ' + id + '）',
-    done: (chars: string, path: string) => '交接提示词已复制（' + chars + ' 字）· 已存到 ' + path + ' · 开新会话或 /clear 会自动填好',
-    noCopy: (path: string) => '没能复制到剪贴板 · 交接提示词已存到 ' + path + ' · 开新会话或 /clear 会自动填好',
+    done: (chars: string, path: string) => '交接提示词已复制（' + chars + ' 字）· 已存到 ' + path + ' · 点 [清空并继续]，或开新会话、/clear，都会自动填好',
+    noCopy: (path: string) => '没能复制到剪贴板 · 交接提示词已存到 ' + path + ' · 点 [清空并继续]，或开新会话、/clear，都会自动填好',
     // 新会话 / /clear 自动填进输入框的那一行 (@交接文件 + 这句)
     fillLine: '按这份交接继续',
     filled: (time: string) => '已填入 ' + time + ' 的交接提示词，按回车发送；不需要就删掉',
@@ -169,6 +176,19 @@ const zh = {
     apiError: (status: string) => '交接失败：API 出错' + (status ? ' ' + status : '') + '，再试一次',
     empty: '交接失败：Claude 没有写出内容，再试一次',
     aborted: '交接已取消',
+  },
+  // 交接历史 (v1.3: /hud history 的面板)
+  hist: {
+    title: '交接历史',
+    count: (n: string, shown: string) => (n === shown ? '共 ' + n + ' 份，最新的在上面' : '共 ' + n + ' 份，这里是最近 ' + shown + ' 份'),
+    keys: '数字键填入 · Esc 关闭',
+    fill: '填入',
+    open: '打开',
+    folder: '打开文件夹',
+    today: '今天',
+    yesterday: '昨天',
+    empty: '这个项目还没有交接。点 [交接] 或输入 /hud handoff 写一份',
+    noFill: '没能填进输入框（有对话框挡着，或者客户端不让 mod 填）。可以点「打开」看全文',
   },
 }
 
@@ -229,6 +249,9 @@ const en: Table = {
     writing: (s: string) => 'writing handoff... ' + s,
     writingDesk: 'Writing handoff…',
     openHandoff: 'Open handoff file',
+    history: 'history',
+    historyDesk: 'Handoff history',
+    clearGo: 'clear & continue',
     lang: 'Lang',
     crab: 'Crab',
     panel: 'Panel',
@@ -250,7 +273,7 @@ const en: Table = {
     handoff: 'Handoff?',
   },
   tipWord: ' · tip: ',
-  tips: ['/hud agents opens the subagent board', '/hud crab hides or shows the crab', '/hud cycles full / compact / hidden', '/hud handoff writes a handoff prompt', '/hud lang zh switches to Chinese'],
+  tips: ['/hud agents opens the subagent board', '/hud crab hides or shows the crab', '/hud cycles full / compact / hidden', '/hud handoff writes a handoff prompt', '/hud history picks up an earlier handoff', '/hud lang zh switches to Chinese'],
   receipt: {
     files: (n: string) => n + (n === '1' ? ' file changed' : ' files changed'),
     tools: (n: string) => n + (n === '1' ? ' tool call' : ' tool calls'),
@@ -271,6 +294,7 @@ const en: Table = {
     toolMilestone: (n: string) => 'Tool call #' + n + ' this session. The crab applauds',
     agentsNarrow: (reason: string) => 'The subagent board needs a wider terminal: ' + reason,
     agentsFailed: (err: string) => "Couldn't open the subagent board: " + err,
+    histFailed: (err: string) => "Couldn't open the handoff history: " + err,
     panelHidden: 'Usage panel hidden. Type /hud to bring it back',
   },
   window: { five_hour: '5-hour', seven_day: 'weekly' } as Record<string, string>,
@@ -294,9 +318,10 @@ const en: Table = {
     stuckTip: 'Running with no tool activity for 5+ minutes is flagged red. Esc to close',
   },
   cmd: {
-    description: 'Usage panel (under the prompt): cycles full -> compact -> hidden; /hud agents subagent board, /hud crab toggles the crab, /hud lang en|zh|auto language, /hud handoff writes a handoff prompt',
+    description: 'Usage panel (under the prompt): cycles full -> compact -> hidden; /hud agents subagent board, /hud crab toggles the crab, /hud lang en|zh|auto language, /hud handoff writes a handoff prompt, /hud history lists past handoffs',
     registerFailed: (err: string) => 'cc-hud: /hud registration failed ' + err,
     agentsOpened: 'Opened the subagent board (Esc to close)',
+    historyOpened: 'Opened the handoff history (press a digit to fill one in, Esc to close)',
     crabOn: 'Crab strip on (just above the prompt)',
     crabOff: 'Crab strip off (/hud crab turns it back on)',
     fixed: 'The terminal panel stays under the prompt, the crab above it',
@@ -311,8 +336,8 @@ const en: Table = {
     busy: 'A handoff prompt is already being written',
     title: (project: string, branch: string, date: string) => '# Handoff: ' + project + (branch ? ' (' + branch + ')' : '') + ' · ' + date,
     resume: (id: string) => '(To reopen the original session instead: claude --resume ' + id + ')',
-    done: (chars: string, path: string) => 'Handoff copied (' + chars + ' chars) · saved to ' + path + ' · a new session or /clear fills it in for you',
-    noCopy: (path: string) => "Couldn't copy to the clipboard · handoff saved to " + path + ' · a new session or /clear fills it in for you',
+    done: (chars: string, path: string) => 'Handoff copied (' + chars + ' chars) · saved to ' + path + ' · [clear & continue], a new session or /clear fills it in for you',
+    noCopy: (path: string) => "Couldn't copy to the clipboard · handoff saved to " + path + ' · [clear & continue], a new session or /clear fills it in for you',
     fillLine: 'Continue from this handoff',
     filled: (time: string) => 'Filled in the handoff from ' + time + '. Press Enter to send, or delete it',
     savedDesk: (path: string) => 'Handoff saved to ' + path + " (the desktop app can't copy yet; click Open handoff file to read it)",
@@ -322,6 +347,18 @@ const en: Table = {
     apiError: (status: string) => 'Handoff failed: API error' + (status ? ' ' + status : '') + '. Try again',
     empty: 'Handoff failed: Claude returned an empty reply. Try again',
     aborted: 'Handoff cancelled',
+  },
+  hist: {
+    title: 'Handoffs',
+    count: (n: string, shown: string) => (n === shown ? n + ' saved, newest first' : n + ' saved, newest ' + shown + ' shown'),
+    keys: 'digit fills in · Esc closes',
+    fill: 'fill in',
+    open: 'open',
+    folder: 'open folder',
+    today: 'today',
+    yesterday: 'yesterday',
+    empty: 'No handoffs for this project yet. Press [handoff] or type /hud handoff to write one',
+    noFill: "Couldn't fill in the prompt (a dialog is open, or the app doesn't allow it). Press open to read it instead",
   },
 }
 
