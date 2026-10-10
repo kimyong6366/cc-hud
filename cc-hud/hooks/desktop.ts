@@ -5,7 +5,7 @@
 import { S } from './strings'
 
 export type CrabMode = 'idle' | 'work' | 'celebrate' | 'sleep'
-export type CrabKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'agent' | 'other'
+export type CrabKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'search' | 'fetch' | 'agent' | 'other' // v1.4: 终端把上网拆成 search / fetch, 客户端还画同一个地球
 export type CrabMood = 'chill' | 'normal' | 'sweat' | 'panic'
 export type CrabState = {
   mode: CrabMode
@@ -18,7 +18,17 @@ export type CrabState = {
   celebMs?: number // 庆祝开始后过了多久 (< 1200 时连跳两下; 不给 = 刚开始)
   heatFrom?: 'ok' | 'hot' // 身体颜色刚变: 从这个颜色渐变过来 (1 秒)
   heatMs?: number // 颜色变了多久
+  // v1.4 (清单第 14 项, 和终端同步): 都可以不给, 不给就是原来的样子. 时间都是 "从多久以前开始" 的毫秒数, 动画按它接着播
+  toolMs?: number // 这次工具跑了多久 (跑命令: 1.35 秒后滚输出, 15 秒后不耐烦; 抓网页: 刚开始时网页飞进来); 过了 15 秒给 15000 就行
+  end?: { kind: CrabKind; ok: boolean; ms: number; hits?: number } // 刚结束的工具和结束了多久 (收尾: 变绿 / 变红 / 翻页 / 收起 / 光点); 过了 END_HOLD_MS 就不给
+  doze?: boolean // 闲 4 分钟: 打瞌睡 (mode 还是 idle)
+  sleepMs?: number // mode = sleep (钻在沙里睡) 时, 钻进去多久了; < 2400 时演下沉 + 睡帽掉下来
+  wake?: { from: 'doze' | 'sand'; ms: number } // 刚醒 (< 1000 时演蹦出来 / 抖一下, 睡帽飞走)
+  typing?: boolean // 你在打字: 低头看输入框
 }
+// 收尾撑多久 (和终端的散步道一样): 搜到了 1.8 秒, 抓完 0.9 秒, 其余 0.6 秒
+export const END_HOLD = 600
+export const END_HOLD_MS: Partial<Record<CrabKind, number>> = { search: 1800, fetch: 900 }
 
 // warn: 预计重置前用完, 百分比和说明文字画成红色
 // tick: 窗口已过的比例 (0-1), 条上画一根亮色细竖线 (时间刻度); 不给就不画 (上下文那根没有)
@@ -63,6 +73,16 @@ const C = {
   kidLeg: '#a4553d',
   warn: '#f87171',
   tick: '#e5e5e5', // 时间刻度: 彩色段和暗色轨道上都看得清
+  // v1.4 (和终端同一套颜色)
+  radarRing: '#15803d', // 搜索的雷达环
+  radarSweep: '#4ade80', // 扫过去的亮点 / 光点
+  radarTrail: '#166534', // 亮点后面的尾巴
+  out: '#a1a1aa', // 终端里滚的输出、热气
+  sand: '#c8a96a', // 睡觉钻的沙堆
+  cap: '#4f46e5', // 睡帽
+  brim: '#e4e4e7', // 帽檐
+  pom: '#fafafa', // 绒球
+  glint: '#fafafa', // 墨镜反光
 }
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max']
 const EFFORT_COLOR: Record<string, string> = { low: '#a1a1aa', medium: '#60a5fa', high: '#fbbf24', xhigh: '#fb923c', max: '#f87171' }
@@ -91,12 +111,17 @@ const glideAttrs = (values: string[], dur: number, o: GlideOpts) =>
   ` dur="${dur}s" begin="${sec(o.begin ?? 0)}s" ${o.once ? 'fill="freeze"' : 'repeatCount="indefinite"'}`
 const glide = (attr: string, values: string[], dur: number, o: GlideOpts = {}) => `<animate attributeName="${attr}" ${glideAttrs(values, dur, o)}/>`
 const glideMove = (values: string[], dur: number, o: GlideOpts = {}) => `<animateTransform attributeName="transform" type="translate" ${glideAttrs(values, dur, o)}/>`
+// v1.4: 某一刻出现 / 消失 (秒, 从这张图开始显示算; <= 0 就是一开始). later = 先藏着, 到时候再出来
+const showAt = (s: number) => `<set attributeName="opacity" to="1" begin="${sec(Math.max(0, s))}s" fill="freeze"/>`
+const hideAt = (s: number) => `<set attributeName="opacity" to="0" begin="${sec(Math.max(0, s))}s" fill="freeze"/>`
+const later = (s: number, body: string, cls = '') => (s <= 0 ? (cls ? `<g class="${cls}">${body}</g>` : body) : `<g${cls ? ` class="${cls}"` : ''} opacity="0">${showAt(s)}${body}</g>`)
 
 // 钳子: 平伸 (第 2 行两格) / 半举 (斜着: 贴身那格在第 2 行, 钳尖在第 1 行) / 举起 (竖着, 第 0-1 行)
-type Arm = 'out' | 'mid' | 'up'
+// v1.4: 耷拉 (打瞌睡, 比平伸低一行)
+type Arm = 'out' | 'mid' | 'up' | 'dn'
 function arm(side: 'L' | 'R', pose: Arm, fill: string): string {
-  if (side === 'L') return pose === 'out' ? px(0, 2, fill, 2, 1) : pose === 'mid' ? px(1, 2, fill) + px(0, 1, fill) : px(0, 0, fill, 1, 2)
-  return pose === 'out' ? px(10, 2, fill, 2, 1) : pose === 'mid' ? px(10, 2, fill) + px(11, 1, fill) : px(11, 0, fill, 1, 2)
+  if (side === 'L') return pose === 'out' ? px(0, 2, fill, 2, 1) : pose === 'dn' ? px(0, 3, fill, 2, 1) : pose === 'mid' ? px(1, 2, fill) + px(0, 1, fill) : px(0, 0, fill, 1, 2)
+  return pose === 'out' ? px(10, 2, fill, 2, 1) : pose === 'dn' ? px(10, 3, fill, 2, 1) : pose === 'mid' ? px(10, 2, fill) + px(11, 1, fill) : px(11, 0, fill, 1, 2)
 }
 // 按顺序循环的钳子 (每个姿势占 dur / seq.length 秒; 离散切换, 姿势本身清楚)
 function armCycle(side: 'L' | 'R', seq: Arm[], dur: number, fill: string): string {
@@ -155,19 +180,35 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
   // 闲置 (或睡着) 时慌张: 双钳举起 + 左右发抖, 睡着的也叫醒
   const panicIdle = mood === 'panic' && (st.mode === 'idle' || st.mode === 'sleep')
   const mode: CrabMode = panicIdle ? 'idle' : st.mode
-  const chill = mood === 'chill' && mode === 'idle'
+  // v1.4 (和终端同步): 打瞌睡 / 钻沙睡觉 / 刚醒 / 打字低头
+  const doze = mode === 'idle' && !!st.doze
+  const sand = mode === 'sleep'
+  const typing = mode === 'idle' && !doze && !!st.typing
+  const chill = mood === 'chill' && mode === 'idle' && !doze && !typing
   const look = working && st.kind !== 'bash' && st.kind !== 'agent' ? 1 : 0
+  // 刚结束的工具: 收尾还要撑多久 (秒); 撑着时右边画收尾, 现在这个动作的道具等它收完再出来
+  const end = st.end && zoneFree && mode !== 'celebrate' ? st.end : undefined
+  const remain = end ? Math.max(0, (END_HOLD_MS[end.kind] ?? END_HOLD) - end.ms) / 1000 : 0
+  const found = !!end && end.kind === 'search' && end.ok && remain > 0
 
   parts.push(px(2, 0, body, 8, 4))
 
   // 钳子 (都经过半举)
+  const rightNormal = (): string => {
+    if (working && st.kind === 'bash') return armCycle('R', TAP, 0.3, body)
+    if (working && st.kind === 'edit') return armCycle('R', TAP, 0.3, body)
+    if (doze) return arm('R', 'dn', body)
+    if (mode === 'idle' && !typing) return armCycle('R', WAVE, 12, body)
+    return arm('R', 'out', body)
+  }
   if (mode === 'celebrate') parts.push(arm('L', 'up', body), arm('R', 'up', body))
   // 闲着时慌张 (v0.22 甩汗): 两只钳子轮流挥, 一只举起一只半举, 每 150ms 换
   else if (panicIdle) parts.push(armCycle('L', ['up', 'mid'], 0.3, body), armCycle('R', ['mid', 'up'], 0.3, body))
-  else if (working && st.kind === 'bash') parts.push(armCycle('L', ['up', 'mid', 'out', 'mid'], 0.3, body), armCycle('R', TAP, 0.3, body))
-  else if (working && st.kind === 'edit') parts.push(arm('L', 'out', body), armCycle('R', TAP, 0.3, body))
-  else if (mode === 'idle') parts.push(arm('L', 'out', body), armCycle('R', WAVE, 12, body))
-  else parts.push(arm('L', 'out', body), arm('R', 'out', body))
+  else {
+    parts.push(working && st.kind === 'bash' ? armCycle('L', ['up', 'mid', 'out', 'mid'], 0.3, body) : arm('L', doze ? 'dn' : 'out', body))
+    // 搜到了: 右钳举起, 收尾完再放下
+    parts.push(found ? `<g>${hideAt(remain)}${arm('R', 'up', body)}</g>${later(remain, rightNormal())}` : rightNormal())
+  }
 
   // 腿: 走路时两对腿交替抬起
   const legsA = px(2, 4, body) + px(7, 4, body)
@@ -175,17 +216,34 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
   if (working || panicIdle) parts.push(`<g>${steps('opacity', ['1', '1', '1', '0'], panicIdle ? 0.4 : 0.8)}${legsA}</g><g>${steps('opacity', ['1', '0', '1', '1'], panicIdle ? 0.4 : 0.8)}${legsB}</g>`)
   else parts.push(legsA + legsB)
 
-  // 眼睛: 睡觉闭眼; 其余时候会眨眼 (半闭 -> 闭 -> 半闭), 闲置时左右张望
-  const eyes = (fill: string) => px(4 + look, 1, fill) + px(7 + look, 1, fill)
-  if (mode === 'sleep') parts.push(eyes(C.eyeShut))
+  // 眼睛: 一字眼只给睡觉和打瞌睡 (平时眨眼不变); 打字时低头看输入框; 悠闲戴墨镜 (加一点反光, 不像闭着眼)
+  const eyes = (fill: string, y = 1) => px(4 + look, y, fill) + px(7 + look, y, fill)
+  const lineEyes = (xs: number[] = [4, 7]) => xs.map(x => `<rect class="line-eye" x="${x}" y="1.5" width="1" height="0.5" fill="${C.eye}"/>`).join('')
+  if (sand) {
+    // 睡着: 一字眼, 每 22.5 秒睁一只眼看看你回来没
+    const peek = Array.from({ length: 30 }, (_, i) => (i === 29 ? '1' : '0'))
+    parts.push(lineEyes([4]), `<g>${steps('opacity', peek.map(v => (v === '1' ? '0' : '1')), 22.5)}${lineEyes([7])}</g><g>${steps('opacity', peek, 22.5)}${px(7, 1, C.eye)}</g>`)
+  } else if (doze) {
+    // 打瞌睡: 一字眼, 每 6 秒猛地睁一下
+    const jolt = Array.from({ length: 20 }, (_, i) => (i === 18 ? '1' : '0'))
+    parts.push(`<g>${steps('opacity', jolt.map(v => (v === '1' ? '0' : '1')), 6)}${lineEyes()}</g><g>${steps('opacity', jolt, 6)}${eyes(C.eye)}</g>`)
+  } else if (typing) parts.push(eyes(C.eye, 2))
   else if (chill) {
-    // 悠闲: 戴墨镜, 不眨眼不张望
-    parts.push(px(3, 1, C.shades, 2, 1), px(5, 1, C.bridge, 2, 1), px(7, 1, C.shades, 2, 1))
+    parts.push(px(3, 1, C.shades, 2, 1), px(5, 1, C.bridge, 2, 1), px(7, 1, C.shades, 2, 1), `<rect x="3" y="1" width="0.5" height="0.5" fill="${C.glint}"/>`)
   } else {
     const glance = mode === 'idle' && !panicIdle ? moves(['0 0', '0 0', '0 0', '0 0', '-1 0', '1 0', '0 0', '0 0'], 16) : ''
     const fills: Record<string, string> = { open: C.eye, half: C.eyeHalf, shut: C.eyeShut }
     const shown = ['open', 'half', 'shut'].map(k => `<g>${steps('opacity', BLINK.map(b => (b === k ? '1' : '0')), 4.5)}${eyes(fills[k] ?? C.eye)}</g>`)
     parts.push(`<g>${glance}${shown.join('')}</g>`)
+  }
+  // 睡帽 (跟着呼吸一起动): 帽檐在身体上面一行, 帽身两行, 帽尖朝右, 绒球; 刚钻进沙里时等钻好了才从上面掉下来
+  if (sand) {
+    const cap = px(3, -1, C.brim, 6, 1) + px(4, -2, C.cap, 5, 1) + px(5, -3, C.cap, 3, 1) + px(9, -2, C.cap) + px(10, -2, C.pom)
+    const ms = st.sleepMs
+    if (ms !== undefined && ms < 2400) {
+      const t = (1800 - ms) / 1000
+      parts.push(`<g opacity="0">${showAt(t)}<g>${glideMove(['0 -3', '0 0'], 0.6, { begin: t, once: true })}${cap}</g></g>`)
+    } else parts.push(cap)
   }
 
   // 头边汗珠 (平滑地往下掉、慢慢变淡): 上下文告急, 或额度 冒汗
@@ -194,12 +252,27 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
     const fling = (xs: string[]) =>
       `<rect width="1" height="1" fill="${C.sweat}">${steps('x', xs, 0.6)}${steps('y', ['-1', '-2', '-2', '-2', '-2', '-2', '-2', '-2'], 0.6)}${steps('opacity', ['1', '1', '1', '0', '0', '0', '0', '0'], 0.6)}</rect>`
     fx.push(fling(['2', '1', '0', '0', '0', '0', '0', '0']), fling(['9', '10', '11', '11', '11', '11', '11', '11']))
-  } else if ((st.heat !== 'ok' || mood === 'sweat') && mode !== 'celebrate')
+  } else if ((st.heat !== 'ok' || mood === 'sweat') && mode !== 'celebrate' && !sand)
     fx.push(`<rect x="1" y="0" width="1" height="1" fill="${C.sweat}">${glide('y', ['0', '2'], 0.9, { linear: true })}${glide('opacity', ['1', '1', '0'], 0.9, { linear: true })}</rect>`)
   // 慌张的 "!": 闲置且右侧空着 -> 右侧竖一个大 "!" (v1.3: 其余时候不再在头顶闪红点, 和终端一样)
   if (panicIdle && zoneFree) fx.push(`<g>${steps('opacity', ['1', '0.35'], 0.5)}${px(14, -1, C.alarm, 1, 3)}${px(14, 3, C.alarm)}</g>`)
 
+  // 沙堆 (盖住钻进去的下半身); 钻沙时沙粒往两边溅
+  if (sand) {
+    fx.push(px(0, 4, C.sand, 12, 2), px(1, 3.5, C.sand, 2, 0.5), px(9, 3.5, C.sand, 2, 0.5))
+    if (st.sleepMs !== undefined && st.sleepMs < 1800) fx.push(sandBurst(-st.sleepMs / 1000, 3))
+  }
+  // 刚醒: 从沙里蹦出来, 沙粒溅开, 睡帽往右上飞走 (螃蟹已经在做下一件事了)
+  const wake = st.wake && st.wake.ms < 1000 && !sand ? st.wake : undefined
+  if (wake?.from === 'sand') {
+    const b = -wake.ms / 1000
+    fx.push(sandBurst(b, 1))
+    const cap = px(3, -1, C.brim, 6, 1) + px(4, -2, C.cap, 5, 1) + px(5, -3, C.cap, 3, 1) + px(9, -2, C.cap) + px(10, -2, C.pom)
+    fx.push(`<g transform="translate(0 1)"><g class="cap-off">${glideMove(['0 0', '4 -3'], 0.8, { begin: b, once: true })}${glide('opacity', ['1', '1', '0'], 0.8, { begin: b, once: true })}${cap}</g></g>`)
+  }
+
   // 右边 3 像素宽的道具区 (x 13-15); 有子代理时让给小螃蟹. 移动的东西 (扫描线、地球、齿轮、泡泡) 平滑地滑
+  const prop: string[] = []
   if (mode === 'celebrate') {
     const spots: Array<[number, number]> = [[13, 0], [15, 1], [14, 3], [13, 6], [15, 5], [1, 0], [10, 0]]
     spots.forEach(([x, y], i) => {
@@ -207,52 +280,86 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
     })
   } else if (!zoneFree) {
     // 道具 / 泡泡让位
-  } else if (mode === 'sleep') {
-    fx.push(`<rect x="14" y="5" width="1" height="1" fill="${C.bubble}">${glide('y', ['5', '0'], 2.4, { linear: true })}</rect>`)
-    fx.push(`<rect x="15" y="5" width="1" height="1" fill="${C.bubble}">${glide('y', ['5', '0'], 2.4, { linear: true, begin: -1.2 })}</rect>`)
+  } else if (sand) {
+    prop.push(`<rect x="14" y="5" width="1" height="1" fill="${C.bubble}">${glide('y', ['5', '0'], 2.4, { linear: true })}</rect>`)
+    prop.push(`<rect x="15" y="5" width="1" height="1" fill="${C.bubble}">${glide('y', ['5', '0'], 2.4, { linear: true, begin: -1.2 })}</rect>`)
   } else if (working) {
+    const t = st.toolMs === undefined ? Infinity : st.toolMs / 1000 // 这个工具已经跑了几秒
     switch (st.kind) {
       case 'think':
-        fx.push(`<rect x="13" y="4" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '1', '1', '1'], 1.6, { linear: true })}</rect>`)
-        fx.push(`<rect x="14" y="2" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '0', '1', '1'], 1.6, { linear: true })}</rect>`)
-        fx.push(`<rect x="15" y="0" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '0', '0', '1'], 1.6, { linear: true })}</rect>`)
+        prop.push(`<rect x="13" y="4" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '1', '1', '1'], 1.6, { linear: true })}</rect>`)
+        prop.push(`<rect x="14" y="2" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '0', '1', '1'], 1.6, { linear: true })}</rect>`)
+        prop.push(`<rect x="15" y="0" width="1" height="1" fill="${C.bubble}">${glide('opacity', ['0', '0', '0', '1'], 1.6, { linear: true })}</rect>`)
         break
       case 'read':
-        fx.push(px(13, 0, C.paper, 3, 4), `<rect x="13" y="0" width="3" height="1" fill="${C.scan}">${glide('y', ['0', '3'], 1.2, { linear: true })}</rect>`)
+        prop.push(px(13, 0, C.paper, 3, 4), `<rect x="13" y="0" width="3" height="1" fill="${C.scan}">${glide('y', ['0', '3'], 1.2, { linear: true })}</rect>`)
         break
-      case 'edit': {
-        fx.push(px(13, 0, C.paper, 3, 4))
-        for (let i = 0; i < 12; i++) {
-          const on = Array.from({ length: 13 }, (_, k) => (k > i ? '1' : '0'))
-          fx.push(`<rect x="${13 + (i % 3)}" y="${Math.floor(i / 3)}" width="1" height="1" fill="${C.ink}">${steps('opacity', on, 2.6)}</rect>`)
-        }
+      case 'edit':
+        // 改文件 B: 钳子每敲一下 (0.3 秒) 多一个墨点, 刚点下去蓝一下; 12 个点 + 停一下 = 4.05 秒一轮
+        prop.push(px(13, 0, C.paper, 3, 4), inkDots(true))
+        break
+      case 'bash': {
+        // 跑命令 B: 先敲 1.35 秒命令, 再盯着输出往上滚; 跑命令 C: 同一条跑到 15 秒, 冒热气、跺脚 (眼睛还盯着屏幕)
+        const typed = 1.35 - t
+        prop.push(px(13, 0, C.term, 3, 4))
+        if (typed > 0)
+          prop.push(`<g>${hideAt(typed)}${px(13, 3, C.cursor)}${later(0.45 - t, px(14, 3, C.out))}${later(0.9 - t, px(15, 3, C.out))}</g>`)
+        prop.push(later(typed, termOutput(), typed > 0 ? 'output' : ''))
+        const imp = 15 - t
+        prop.push(`<g class="impatient" opacity="0">${showAt(imp)}${steam()}</g>`)
+        parts.push(`<animateTransform attributeName="transform" type="translate" values="0 0;0 0.5;0 0" dur="0.3s" begin="${sec(Math.max(0, imp))}s" calcMode="discrete" repeatCount="indefinite" additive="sum"/>`)
         break
       }
-      case 'bash':
-        fx.push(px(13, 0, C.term, 3, 4), px(13, 1, C.cursor), `<rect x="14" y="3" width="1" height="1" fill="${C.cursor}">${steps('opacity', ['1', '0'], 0.8)}</rect>`)
+      case 'search':
+        // 上网 S2: 绿色雷达环, 亮点带着尾巴转圈 (1.2 秒一圈)
+        prop.push(radar())
+        break
+      case 'fetch':
+        // 抓网页 D+: 带蓝条的网页从右边飞进来 (刚开始时), 内容一行行加载
+        prop.push(`<g>${glideMove(['4 0', '0 0'], 0.45, { begin: -Math.min(t, 99), once: true })}${px(13, 0, C.paper, 3, 4)}${px(13, 0, C.scan, 3, 1)}${[1, 2, 3].map(y => `<rect x="13" y="${y}" width="${y === 2 ? 1 : 2}" height="1" fill="${C.out}">${steps('opacity', [0, 1, 2, 3].map(k => (k >= y ? '1' : '0')), 1.2)}</rect>`).join('')}</g>`)
         break
       case 'web':
-        fx.push(px(14, 0, C.sea), px(15, 1, C.sea), px(14, 2, C.sea), px(13, 1, C.sea), px(14, 1, C.sea))
-        fx.push(`<rect width="1" height="1" fill="${C.land}">${glide('x', ['14', '15', '14', '13', '14'], 1.2, { linear: true })}${glide('y', ['0', '1', '2', '1', '0'], 1.2, { linear: true })}</rect>`)
+        prop.push(px(14, 0, C.sea), px(15, 1, C.sea), px(14, 2, C.sea), px(13, 1, C.sea), px(14, 1, C.sea))
+        prop.push(`<rect width="1" height="1" fill="${C.land}">${glide('x', ['14', '15', '14', '13', '14'], 1.2, { linear: true })}${glide('y', ['0', '1', '2', '1', '0'], 1.2, { linear: true })}</rect>`)
         break
       case 'agent':
         break
       default: {
-        fx.push(px(14, 1, C.gear))
+        prop.push(px(14, 1, C.gear))
         const orbit: Array<[number, number]> = [[13, 0], [14, 0], [15, 0], [15, 1], [15, 2], [14, 2], [13, 2], [13, 1], [13, 0]]
-        fx.push(`<rect width="1" height="1" fill="${C.gear}">${glide('x', orbit.map(o => String(o[0])), 1.2, { linear: true })}${glide('y', orbit.map(o => String(o[1])), 1.2, { linear: true })}</rect>`)
+        prop.push(`<rect width="1" height="1" fill="${C.gear}">${glide('x', orbit.map(o => String(o[0])), 1.2, { linear: true })}${glide('y', orbit.map(o => String(o[1])), 1.2, { linear: true })}</rect>`)
       }
     }
   }
+  // 收尾 (工具真的结束了): 撑一会儿再收起来, 现在这个动作的道具接着出来
+  if (end && remain > 0) {
+    const b = -end.ms / 1000
+    let fin = ''
+    if (end.kind === 'bash') fin = px(13, 0, C.term, 3, 4) + termLines() + px(13, 3, end.ok ? C.cursor : C.alarm, 3, 1)
+    else if (end.kind === 'edit')
+      fin = px(13, 0, C.paper, 3, 4) + `<g>${glideMove(['0 0', '0 -2'], 0.45, { begin: b, once: true })}${glide('opacity', ['1', '1', '0'], 0.45, { begin: b, once: true })}${px(13, 0, C.paper, 3, 4)}${inkDots(false)}</g>`
+    else if (end.kind === 'fetch')
+      fin =
+        `<rect x="13" y="0" width="3" height="4" fill="${C.paper}">${glide('height', ['4', '0'], 0.45, { begin: b, once: true })}</rect>` +
+        `<rect x="13" y="0" width="3" height="1" fill="${C.scan}">${glide('height', ['1', '0'], 0.45, { begin: b, once: true })}</rect>` +
+        `<rect x="13" y="-1" width="1" height="1" fill="${C.spark}">${glide('opacity', ['1', '0', '1'], 0.3)}</rect><rect x="15" y="0" width="1" height="1" fill="${C.spark}">${glide('opacity', ['0', '1', '0'], 0.3)}</rect>`
+    else if (end.kind === 'search') {
+      const n = end.ok ? Math.max(1, Math.min(5, end.hits ?? 1)) : 0
+      fin = RING.map(([x, y]) => px(x, y, C.radarRing)).join('') + [0, 2, 4, 6, 1].slice(0, n).map((k, i) => `<rect class="blip" x="${RING[k]![0]}" y="${RING[k]![1]}" width="1" height="1" fill="${C.radarSweep}" opacity="0">${showAt(i * 0.15 + b)}</rect>`).join('')
+    }
+    if (fin) fx.push(`<g>${hideAt(remain)}${fin}</g>`)
+    fx.push(later(remain, prop.join('')))
+  } else fx.push(...prop)
   // 子代理小螃蟹: 任何状态下都画, 盖在最上面; 1 只上下跳着走, 2-3 只排成一列走
   if (nKids === 1) fx.push(kidSvg(13, 1.5, 0.5, 0, ['0 0', '0 -0.5', '0 0', '0 0.5']))
   else if (nKids === 2) fx.push(kidSvg(13, -0.5, 0.5, 0, ['0 0', '0 0.5']), kidSvg(13, 2.75, 0.5, 1, ['0 0', '0 0.5']))
   else if (nKids >= 3) for (let i = 0; i < 3; i++) fx.push(kidSvg(13.3, -0.9 + i * 2.3, 0.4, i, null))
 
-  // 整只上下挪 (平滑): 走路时颠; 睡觉时慢慢呼吸 (2 秒一下); 庆祝时先连跳两下 (真的离地, 进顶上那一行), 再原地颠
+  // 整只上下挪 (平滑): 走路时颠; 打瞌睡点头 (6 秒一下); 睡在沙里慢慢呼吸 (4 秒一下); 庆祝时先连跳两下 (真的离地, 进顶上那一行), 再原地颠
   let bob = ''
   if (working) bob = glideMove(['0 0', '0 1', '0 0'], 0.4)
-  else if (mode === 'sleep') bob = glideMove(['0 0', '0 1', '0 0'], 4)
+  else if (sand) bob = glideMove(['0 0', '0 1', '0 0'], 4)
+  else if (doze) bob = glideMove(['0 0', '0 0', '0 1', '0 1', '0 0'], 6)
   else if (mode === 'celebrate') {
     const c = Math.max(0, st.celebMs ?? 0)
     if (c < HOPS_MS) bob += glideMove([...HOP_PATH, ...HOP_PATH.slice(1)], HOPS_MS / 1000, { begin: -c / 1000, once: true })
@@ -260,9 +367,16 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
   }
   // 发出消息那一跳 (蹲 -> 跳起 -> 最高 -> 落下 -> 落地 -> 站好), 叠在外层, 和走路的颠一起
   const jump = st.jumpMs !== undefined && st.jumpMs >= 0 && st.jumpMs < 750 ? glideMove(JUMP_PATH, 0.75, { begin: -st.jumpMs / 1000, once: true }) : ''
-  const crab = `<g>${bob}${parts.join('')}</g>`
+  let crab = `<g>${bob}${parts.join('')}</g>`
+  // 钻进沙里: 整只往下沉一行, 一字眼露在沙上面 (刚钻时演下沉); 刚醒: 从沙里蹦出来 / 打瞌睡被吵醒抖一下
+  if (sand) {
+    const ms = st.sleepMs
+    crab = ms !== undefined && ms < 1800 ? `<g>${glideMove(['0 0', '0 1'], 1.8, { begin: -ms / 1000, once: true })}${crab}</g>` : `<g transform="translate(0 1)">${crab}</g>`
+  } else if (wake?.from === 'sand') crab = `<g>${glideMove(['0 1', '0 -1', '0 0'], 0.6, { begin: -wake.ms / 1000, once: true })}${crab}</g>`
+  else if (wake?.from === 'doze')
+    crab = `<g><animateTransform attributeName="transform" type="translate" values="-0.5 0;0.5 0;0 0" dur="0.225s" begin="${sec(-wake.ms / 1000)}s" calcMode="discrete" fill="freeze"/>${crab}</g>`
   const W = 16
-  const H = 8 // 第 -2..-1 行留给跳 (和闪光 / "!"), 第 0-4 行是螃蟹, 第 5 行给往下颠
+  const H = 8 // 第 -2..-1 行留给跳 (和闪光 / "!" / 睡帽), 第 0-4 行是螃蟹, 第 5 行给往下颠 (和沙堆)
   const art = `<g color="${color}">${colorAnim}${jump ? `<g>${jump}${crab}</g>` : crab}${fx.join('')}</g>`
   // color-scheme: 让小窗框跟随客户端的深/浅色主题, 不再垫白底
   const cs = ` style="color-scheme:light dark;background:transparent"`
@@ -276,6 +390,62 @@ export function crabSvg(st: CrabState, scale = 6, tile?: { w: number; h: number 
     `<rect x="0.5" y="0.5" width="${tile.w - 1}" height="${tile.h - 1}" rx="10" fill="${T.panel}" stroke="${T.border}"/>` +
     `<g transform="translate(${ox} ${oy}) scale(${scale})" shape-rendering="crispEdges">${art}</g></svg>`
   )
+}
+
+// v1.4 道具的小零件
+// 雷达环 8 格 (顺时针, 从左上开始); 亮点带一格尾巴转圈
+const RING: Array<[number, number]> = [[13, 0], [14, 0], [15, 0], [15, 1], [15, 2], [14, 2], [13, 2], [13, 1]]
+function radar(): string {
+  const xs = RING.map(r => String(r[0]))
+  const ys = RING.map(r => String(r[1]))
+  const back = (a: string[]) => [a[a.length - 1]!, ...a.slice(0, -1)]
+  return (
+    RING.map(([x, y]) => px(x, y, C.radarRing)).join('') +
+    `<rect width="1" height="1" fill="${C.radarTrail}">${steps('x', back(xs), 1.2)}${steps('y', back(ys), 1.2)}</rect>` +
+    `<rect width="1" height="1" fill="${C.radarSweep}">${steps('x', xs, 1.2)}${steps('y', ys, 1.2)}</rect>`
+  )
+}
+// 墨点 12 个 (3 列 x 4 行); live = 跟着钳子一个个点上去 (4.05 秒一轮), 否则一次全画上 (翻页那张)
+function inkDots(live: boolean): string {
+  let out = ''
+  for (let i = 0; i < 12; i++) {
+    const x = 13 + (i % 3)
+    const y = Math.floor(i / 3)
+    if (!live) {
+      out += `<rect class="ink" x="${x}" y="${y}" width="1" height="1" fill="${C.ink}"/>`
+      continue
+    }
+    const blue = Array.from({ length: 27 }, (_, k) => (k === 2 * i ? '1' : '0'))
+    const ink = Array.from({ length: 27 }, (_, k) => (k > 2 * i ? '1' : '0'))
+    out += `<g class="ink"><rect x="${x}" y="${y}" width="1" height="1" fill="${C.scan}">${steps('opacity', blue, 4.05)}</rect><rect x="${x}" y="${y}" width="1" height="1" fill="${C.ink}">${steps('opacity', ink, 4.05)}</rect></g>`
+  }
+  return out
+}
+// 终端里的输出: 三行长短不一的灰线轮着变 (看起来在往上滚), 最下面一行是提示符和闪的光标
+function termOutput(): string {
+  const rows = [
+    ['3', '1', '2', '3', '2', '1'],
+    ['1', '2', '3', '2', '1', '3'],
+    ['2', '3', '1', '1', '3', '2'],
+  ]
+  return (
+    rows.map((w, y) => `<rect x="13" y="${y}" width="3" height="1" fill="${C.out}">${steps('width', w, 1.8)}</rect>`).join('') +
+    px(13, 3, C.cursor) +
+    `<rect x="14" y="3" width="1" height="1" fill="${C.cursor}">${steps('opacity', ['1', '0'], 0.8)}</rect>`
+  )
+}
+const termLines = () => px(13, 0, C.out, 2, 1) + px(13, 1, C.out, 3, 1) + px(13, 2, C.out, 1, 1)
+// 冒热气: 终端上面两缕灰气往上飘
+function steam(): string {
+  return [14, 15]
+    .map((x, i) => `<rect class="steam" x="${x}" width="1" height="1" fill="${C.out}">${glide('y', ['-0.5', '-2'], 0.9, { linear: true, begin: -i * 0.45 })}${glide('opacity', ['1', '0'], 0.9, { linear: true, begin: -i * 0.45 })}</rect>`)
+    .join('')
+}
+// 沙粒往两边溅 (times 次, 每次 0.6 秒)
+function sandBurst(begin: number, times: number): string {
+  const grain = (x0: number, x1: number) =>
+    `<rect width="1" height="1" fill="${C.sand}"><animate attributeName="x" values="${x0};${x1}" dur="0.6s" begin="${sec(begin)}s" repeatCount="${times}"/><animate attributeName="y" values="3;1;3" dur="0.6s" begin="${sec(begin)}s" repeatCount="${times}"/><animate attributeName="opacity" values="1;1;0" dur="0.6s" begin="${sec(begin)}s" repeatCount="${times}" fill="freeze"/></rect>`
+  return grain(1, -1) + grain(10, 12)
 }
 
 // ---------------- 仪表盘 ----------------

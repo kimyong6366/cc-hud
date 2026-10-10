@@ -1,5 +1,6 @@
 import { test, expect, mock } from 'claude-code/testing'
-import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, receiptText, setLang, doingText, workflowName, handoffBrief } from './register'
+import { previewScene, previewPixels, previewLane, laneTip, paceOf, moodOf, dayShare, receiptText, setLang, doingText, workflowName, handoffBrief } from './register'
+import { newLane, bubbleSpot } from './sprites'
 import { crabSvg, dashSvg } from './desktop'
 import { TABLES } from './strings'
 
@@ -14,7 +15,8 @@ const USAGE = {
 }
 
 // 终端里允许出现的字符: ASCII、中日韩文字、全角逗号、以及确定单宽的方块/框线字符
-const SAFE = /^[\x20-\x7E\u4E00-\u9FFF，│█▏▎▍▌▋▊▉─━╸▁▂▃▄▅▆▇✓]*$/
+//   ● (v1.4 的 rc 绿点): Claude Code 自己每条回复前面都用它; · (v1.4 工具栏上的今天用量): Claude Code 自己的提示行也用它. 宽度都和引擎算的一致
+const SAFE = /^[\x20-\x7E\u4E00-\u9FFF，│█▏▎▍▌▋▊▉─━╸▁▂▃▄▅▆▇✓●·]*$/
 const CWD = 'D:\\work\\my-app'
 
 // 模拟三种系统: 工作目录、环境变量、是不是 macOS、打不开的命令 (退出码 3)
@@ -39,7 +41,9 @@ type Calls = { run: string[][]; cmd: string[]; dirs: string[]; toasts: string[];
 // fillResult: $.prompt.fill 的回答 (默认填进去了; 可以模拟对话框挡着 / 没有输入框)
 // handoffs: 交接文件夹 (<配置目录>/handoffs/my-app/) 里的东西, 给 $.fs.list / $.fs.read 用 (不给 = 文件夹不存在); draft: 输入框里已经打的字
 type HandoffFile = { name: string; text?: string; mtimeMs?: number; kind?: 'file' | 'dir' }
-type Opts = { handoffs?: () => HandoffFile[] | undefined; draft?: string; fillResult?: (e: any) => any; usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
+// toolError: 这次工具调用要不要报错 (isError)
+// toolResult: 这次工具调用返回的 result (比如 WebSearch 的结果列表)
+type Opts = { toolResult?: (e: any) => any; toolError?: (e: any) => boolean; handoffs?: () => HandoffFile[] | undefined; draft?: string; fillResult?: (e: any) => any; usage?: () => any; agents?: () => any[]; now?: () => number; mockClock?: number; store?: Record<string, unknown>; toolGate?: () => Promise<void>; lang?: 'en' | 'zh' | null; fork?: () => Promise<any>; copyOk?: boolean; writeFails?: boolean; language?: string }
 
 function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
   // 存储用内存里的假存储: 测试里的 /hud top 不能写进用户真实的偏好文件
@@ -92,9 +96,9 @@ function mocks(on: any, calls: Calls, sys: Sys = WIN, opts: Opts = {}) {
   on('prompt.read', async () => ({ value: { text: opts.draft ?? '', cursor: (opts.draft ?? '').length } }))
   on('turn.start', async ($: any, e: any) => ({ turnId: e.turnId }))
   on('turn.complete', async () => ({ text: '' }))
-  on('tool.call', async () => {
+  on('tool.call', async ($: any, e: any) => {
     if (opts.toolGate) await opts.toolGate()
-    return { result: {}, text: 'ok' }
+    return opts.toolError?.(e) ? { result: {}, text: 'boom', isError: true } : { result: opts.toolResult?.(e) ?? {}, text: 'ok' }
   })
   on('classic.SubagentStart', async () => ({}))
   on('classic.SessionStart', async () => ({}))
@@ -1380,7 +1384,8 @@ test('大螃蟹就是面板那只: 有工具在跑时停下原地做这个工具
     ['read', 0xd4d4d8],
     ['edit', 0xd4d4d8],
     ['bash', 0x3f3f46],
-    ['web', 0x3b82f6],
+    ['search', 0x15803d], // v1.4: 雷达的绿圈 (左半边在道具区里)
+    ['fetch', 0x3b82f6], // v1.4: 网页顶上的蓝条
   ]
   for (const [tool, color] of props) {
     const r = previewLane({ w: 80, sky: true, frames: 30, working: true, tool: f => (f >= 10 ? (tool as any) : '') })
@@ -1430,7 +1435,9 @@ test('情绪照面板: 悠闲闲着戴墨镜, 冒汗有汗滴, 慌张出 "!", �
   const cel = previewLane({ w: 60, frames: 6, working: false, celebrating: true })
   expect(cel.frames.every(fr => at(fr.px, fr.bx, 0) === BODY || at(fr.px, fr.bx, 1) === BODY)).toBe(true) // 左钳举起
   const sleep = previewLane({ w: 60, frames: 30, working: false, sleeping: true })
-  expect(sleep.frames.every(fr => fr.pose === 'sleep' && !fr.px.flat().includes(EYE))).toBe(true)
+  // v1.4: 睡着是一字眼 (眼睛那一行连着两格眼睛色)
+  const lined = (fr: any) => fr.px.some((row: number[]) => row[fr.bx + 3] === EYE && row[fr.bx + 4] === EYE && row[fr.bx + 7] === EYE && row[fr.bx + 8] === EYE)
+  expect(sleep.frames.every(fr => fr.pose === 'sleep' && lined(fr))).toBe(true)
 })
 
 test('小螃蟹: 7x4 (比大螃蟹小一大截), 眼睛四周都是身体, 看前面时也只在身体里挪; N 只互不重叠也不贴住; 每帧最多挪 1 格; 碰到两端整队掉头; 放不下记 +N', { timeoutMs: 30_000 }, () => {
@@ -1631,14 +1638,17 @@ test('5 分钟没有任何动静才睡; 子代理在跑不算闲; 打字时停�
   let list: any[] = []
   const { clock } = await start($, on, WIN, { mockClock: T, agents: () => list, usage: lowUsage })
   const ui = await mountAbove($, 110, 4)
+  // v1.4: 睡着 = 闭成一字眼 (4 分钟开始打瞌睡时眼睛还睁着; 5 分钟钻进沙里, 钻好了闭眼)
+  //   (睡在沙里时钳子被沙盖住, walkOf 按最左的身体像素猜的 bx 会偏, 所以按「两段一字眼」的形状找, 不靠 bx)
+  const lined = (px: number[][]) => px.some(r => r.some((c, i) => c === EYE && r[i + 1] === EYE && r[i + 4] === EYE && r[i + 5] === EYE))
   const peek = async () => {
     const w = await walkOf(ui)
-    return { open: w.px.flat().includes(EYE), x: w.bx }
+    return { open: !lined(w.px), x: w.bx }
   }
   await ui.advance(4 * 60_000)
   expect((await peek()).open).toBe(true)
-  await ui.advance(61_500)
-  expect((await peek()).open).toBe(false) // 5 分钟没动静: 睡着 (闭眼)
+  await ui.advance(63_000) // 钻沙 1.8 秒, 钻好 (第 1.5 秒) 才闭眼
+  expect((await peek()).open).toBe(false) // 5 分钟没动静: 钻进沙里, 闭成一字眼
   const typed = (text: string) => $.prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length, end: text.length, inputText: 'x' } as any)
   await clock.advance(1000)
   await typed('')
@@ -1799,11 +1809,12 @@ test('工具在跑时 (接上真的横栏): 大螃蟹停下原地做这个工具
   await $.turn.start({ text: 'hi', turnId: 't1' } as any)
   await clock.advance(10)
   await ui.advance(1500)
-  for (const [tool, color] of [
-    ['Read', 0xd4d4d8],
-    ['Bash', 0x3f3f46],
-    ['WebSearch', 0x3b82f6],
-  ] as Array<[string, number]>) {
+  // v1.4: 跑命令的屏幕敲命令时几乎被字盖满 (上面三行旧输出各 3 格), 认屏幕上任何一种颜色
+  for (const [tool, colors] of [
+    ['Read', [0xd4d4d8]],
+    ['Bash', [0x3f3f46, 0x71717a, 0x4ade80]],
+    ['WebSearch', [0x15803d, 0x4ade80]], // v1.4: 雷达
+  ] as Array<[string, number[]]>) {
     const call = $.tool.call({ tool, file_path: 'D:\work\my-app\a.ts', command: 'ls', query: 'x' } as any)
     await clock.settle()
     await ui.advance(300)
@@ -1812,10 +1823,10 @@ test('工具在跑时 (接上真的横栏): 大螃蟹停下原地做这个工具
     const b = await walkOf(ui)
     expect(b.bx).toBe(a.bx) // 停下
     const zone = b.px.flatMap(row => row.slice(b.bx + 12, b.bx + 15))
-    expect(zone.includes(color) ? 'ok' : `${tool}: 螃蟹右边没有道具`).toBe('ok')
+    expect(colors.some(c => zone.includes(c)) ? 'ok' : `${tool}: 螃蟹右边没有道具`).toBe('ok')
     open()
     await call
-    await ui.advance(1500)
+    await ui.advance(2500) // v1.4: 搜索的「找到了」撑约 1.8 秒
     expect((await walkOf(ui)).bx !== b.bx).toBe(true) // 工具结束: 接着走 (在想)
   }
   await ui.unmount()
@@ -2871,6 +2882,329 @@ test('not fullscreen in a narrow window: the hint gets shorter or steps aside, a
   await mid.unmount()
 })
 
+// ================= v1.4: remote control 的 rc 绿点 (全屏时 Claude Code 把 /rc 画在顶部 logo 里, 一滚就看不到) =================
+const RC_OFF = 'Remote Control disconnected.'
+const runRc = ($: any) => $.command.run({ command: 'remote-control', args: '' } as any)
+async function cmdOutput($: any, command = 'remote-control', text = RC_OFF) {
+  const ui = await $.ui.mount({ plugin: 'cc-hud', surface: 'terminal', component: 'CommandOutput', requestId: 'out-' + command, props: { command, args: '', text, isErrored: false } } as any)
+  await ui.unmount()
+}
+const rcDot = async (ui: any) => ((await ui.findAll({ type: 'Text' })) as any[]).find(t => t.text === '●')
+async function hasRc($: any, mount: (cols: number) => Promise<any> = cols => mountHint($, 'terminal', cols), cols = 140) {
+  const ui = await mount(cols)
+  const has = !!(await btn(ui, 'btn-rc'))
+  await ui.unmount()
+  return has
+}
+
+test('remote control: after /remote-control a green dot rc sits at the right end of the toolbar; pressing it runs /remote-control again', async ($, on) => {
+  const calls = await start($, on, WIN, CALM)
+  expect(await hasRc($)).toBe(false)
+  await runRc($)
+  for (const cols of [140, 65]) {
+    const ui = await mountHint($, 'terminal', cols)
+    expect((await btn(ui, 'btn-rc'))?.props.label).toBe('rc')
+    expect((await rcDot(ui))?.props.color).toBe('#4ade80')
+    const info: any = await ui.find({ type: 'Box', key: 'info' })
+    const t = await toolbarText(ui)
+    expect(t.endsWith('● rc') ? 'ok' : `${cols}: "${t}"`).toBe('ok')
+    expect(dwT(t)).toBe(info.props.width) // 靠右, 正好到面板右边
+    for (const s of await strings(ui)) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
+    await ui.unmount()
+  }
+  const ui = await mountHint($, 'terminal', 140)
+  await ui.press({ key: 'btn-rc' }) // 弹出 Claude Code 自己的窗口: 链接、二维码、断开
+  expect(calls.cmd.filter(c => c === 'remote-control').length).toBe(2)
+  await ui.unmount()
+})
+
+test('remote control: Disconnect (its output row appears) takes the rc away; Continue or Esc (no output) keeps it; /clear keeps it', async ($, on) => {
+  await start($, on, WIN, CALM)
+  await runRc($)
+  await runRc($) // 开着时再跑, 窗口里选了「继续」: 什么都不打印
+  expect(await hasRc($)).toBe(true)
+  await $.session.start({ cwd: WIN.cwd, source: 'clear' } as any) // 清空后 remote control 还开着
+  expect(await hasRc($)).toBe(true)
+  await runRc($)
+  await cmdOutput($) // 选了「断开」
+  expect(await hasRc($)).toBe(false)
+})
+
+test('remote control: an old "disconnected" row drawn again later (a scroll) and other commands\' output leave the rc alone', async ($, on) => {
+  const { clock } = await start($, on, WIN, { ...CALM, mockClock: 1_900_000_000_000 })
+  await runRc($)
+  await cmdOutput($, 'cost', 'Total cost: $0.12') // 别的命令的输出
+  expect(await hasRc($)).toBe(true)
+  await cmdOutput($) // 断开
+  await runRc($) // 又打开
+  await clock.advance(10_000)
+  await cmdOutput($) // 滚动时, 之前那行「disconnected」又画了一次
+  expect(await hasRc($)).toBe(true)
+})
+
+test('remote control: no rc when not fullscreen (Claude Code draws its own /rc at the bottom right there); the one-line panel shows it right after the buttons', async ($, on) => {
+  await start($, on, WIN, CALM)
+  await runRc($)
+  expect(await hasRc($, cols => mountHintMain($, cols))).toBe(false)
+  await $.command.run({ command: 'hud', args: 'compact' } as any)
+  const ui = await mountHint($, 'terminal', 140)
+  const line: any = await ui.find({ type: 'Box', key: 'hud-line' })
+  const keys: string[] = line.children.map((c: any) => c.props?.key)
+  expect(keys.slice(0, 2)).toEqual(['seg-bar', 'seg-rc'])
+  expect((await rcDot(ui))?.props.color).toBe('#4ade80')
+  await ui.unmount()
+  await $.command.run({ command: 'hud', args: 'full' } as any)
+})
+
+// ================= v1.4: 工具栏上的「今天用了多少」(清单第 4 项; 用户选了 A: 靠右, 完整的一句, 挨着 rc; 网格不动) =================
+const DAY = 86_400_000
+const dayKey = (t: number) => {
+  const d = new Date(t)
+  return `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`
+}
+const midnightOf = (t: number) => {
+  const d = new Date(t)
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
+}
+// 下午 2 点; 本周额度在 3.5 天后 (从今天 0 点算) 重置 -> 今天 0 点剩 70% 时, 每天能用 20%
+const PT = midnightOf(1_900_000_000_000) + 14 * 3600_000
+const PAT = midnightOf(PT) + 3.5 * DAY
+const weekAt = (pct: () => number, at = PAT) => () => ({
+  ...USAGE,
+  context: { tokens: 80_000, window: 200_000, percent: 40 },
+  rateLimits: [
+    { kind: 'five_hour', percentUsed: 10, resetsAt: new Date(PT + 2 * 3600_000).toISOString() },
+    { kind: 'seven_day', percentUsed: pct(), resetsAt: new Date(at).toISOString() },
+  ],
+})
+const dayStore = (start: number, at = PAT, day = dayKey(PT)) => ({ paceDay: { day, start, resetsAt: new Date(at).toISOString() } })
+const findText = async (ui: any, text: string) => ((await ui.findAll({ type: 'Text' })) as any[]).find(t => t.text === text)
+
+test('today\'s share: used today = now - first reading of the day; per day = what was left then / days to the reset counting today', () => {
+  const mid = midnightOf(PT)
+  expect(dayShare(30, 51, mid + 3.5 * DAY, mid)).toEqual({ today: 21, daily: 20, over: true })
+  expect(dayShare(30, 40, mid + 3.5 * DAY, mid)).toEqual({ today: 10, daily: 20, over: false })
+  expect(dayShare(60, 70, mid + 0.4 * DAY, mid).daily).toBe(40) // 今天就重置: 剩下的全是今天的
+  expect(dayShare(30, 29, mid + 3.5 * DAY, mid).today).toBe(0)
+})
+
+test('toolbar: today\'s use and the daily share sit at the right end, next to rc; the grid is unchanged; today\'s number turns orange once over', async ($, on) => {
+  let pct = 51
+  await start($, on, WIN, { ...CALM, lang: null, mockClock: PT, usage: weekAt(() => pct), store: dayStore(30) })
+  let ui = await mountHint($, 'terminal', 140)
+  let t = await toolbarText(ui)
+  const info: any = await ui.find({ type: 'Box', key: 'info' })
+  expect(t.endsWith('today 21% · 20%/day') ? 'ok' : t).toBe('ok')
+  expect(dwT(t)).toBe(info.props.width)
+  expect((await findText(ui, '21%'))?.props.color).toBe('#fb923c')
+  for (const s of await strings(ui)) expect(SAFE.test(s) ? 'ok' : 'unsafe: ' + s).toBe('ok')
+  const week: any = await ui.find({ type: 'Box', key: 'r2c2' })
+  expect(String(week?.text ?? '')).not.toContain('day') // 本周那格照旧
+  await ui.unmount()
+  pct = 40
+  ui = await mountHint($, 'terminal', 140)
+  expect((await toolbarText(ui)).endsWith('today 10% · 20%/day')).toBe(true)
+  expect((await findText(ui, '10%'))?.props.color).toBe('#d4d4d8')
+  await ui.unmount()
+  await runRc($)
+  ui = await mountHint($, 'terminal', 140)
+  t = await toolbarText(ui)
+  expect(t.endsWith('today 10% · 20%/day   ● rc') ? 'ok' : t).toBe('ok')
+  await ui.unmount()
+})
+
+test('toolbar in Chinese: 今天用了 21% · 每天能用 20%', async ($, on) => {
+  await start($, on, WIN, { ...CALM, lang: 'zh', mockClock: PT, usage: weekAt(() => 51), store: dayStore(30) })
+  const ui = await mountHint($, 'terminal', 140)
+  const t = await toolbarText(ui)
+  expect(t.endsWith('今天用了 21% · 每天能用 20%') ? 'ok' : t).toBe('ok')
+  await ui.unmount()
+})
+
+test('today\'s start: the first reading of the day is remembered across sessions and reloads; a new day or a new week window starts over', async ($, on) => {
+  let pct = 30
+  let at = PAT
+  let tnow = PT
+  await start($, on, WIN, { ...CALM, lang: null, now: () => tnow, usage: () => weekAt(() => pct, at)() })
+  const tb = async () => {
+    const ui = await mountHint($, 'terminal', 140)
+    const t = await toolbarText(ui)
+    await ui.unmount()
+    return t
+  }
+  expect(await tb()).toContain('today 0% · 20%/day')
+  pct = 51
+  expect(await tb()).toContain('today 21% · 20%/day')
+  await $.session.start({ cwd: WIN.cwd } as any) // 重新加载 / 新会话: 从存储里读回今天的起点
+  expect(await tb()).toContain('today 21%')
+  tnow += DAY // 第二天: 起点重新记
+  expect(await tb()).toContain('today 0%')
+  pct = 55
+  at = PAT + 7 * DAY // 本周额度重置了 (重置时间跳了一周): 也重新记
+  expect(await tb()).toContain('today 0%')
+})
+
+test('crab: sweats once today\'s use is over the daily share, even when the week as a whole is on pace', async ($, on) => {
+  let pct = 51
+  await start($, on, WIN, { ...CALM, mockClock: PT, usage: weekAt(() => pct), store: dayStore(30) })
+  let band = await mountBand($, 140)
+  expect(((await band.find({ type: 'Client' })) as any)?.props.props.mood).toBe('sweat')
+  await band.unmount()
+  pct = 40
+  band = await mountBand($, 140)
+  expect(((await band.find({ type: 'Client' })) as any)?.props.props.mood).not.toBe('sweat') // 整周还慢于时间: 平常或悠闲
+  await band.unmount()
+})
+
+test('toolbar: a shorter form when room runs out; none without a weekly limit; the one-line panel puts the short form last when it fits', async ($, on) => {
+  let limits = true
+  await start($, on, WIN, { ...CALM, lang: null, mockClock: PT, usage: () => (limits ? weekAt(() => 51)() : { ...USAGE, rateLimits: [] }), store: dayStore(30) })
+  let ui = await mountHint($, 'terminal', 51)
+  const t = await toolbarText(ui)
+  const info: any = await ui.find({ type: 'Box', key: 'info' })
+  expect(t.endsWith('today 21/20%') ? 'ok' : t).toBe('ok')
+  expect(dwT(t) <= info.props.width).toBe(true)
+  await ui.unmount()
+  await $.command.run({ command: 'hud', args: 'compact' } as any)
+  ui = await mountHint($, 'terminal', 170)
+  const line: any = await ui.find({ type: 'Box', key: 'hud-line' })
+  const keys: string[] = line.children.map((c: any) => c.props?.key)
+  expect(keys[keys.length - 1]).toBe('seg-pace')
+  await ui.unmount()
+  await $.command.run({ command: 'hud', args: 'full' } as any)
+  limits = false
+  ui = await mountHint($, 'terminal', 140)
+  expect(await toolbarText(ui)).not.toContain('today')
+  await ui.unmount()
+})
+
+test('desktop: the toolbar row ends with today\'s use (the full sentence) and, after /remote-control, the green rc', async ($, on) => {
+  const calls = await start($, on, WIN, { ...CALM, lang: null, mockClock: PT, usage: weekAt(() => 51), store: dayStore(30) })
+  let ui = await mountDesktop($, 110)
+  const share: any = await ui.find({ type: 'Box', key: 'd-share' })
+  expect(String(share?.text ?? '')).toBe('today 21% · 20%/day')
+  expect((await findText(ui, '21%'))?.props.color).toBe('#fb923c')
+  expect(await btn(ui, 'btn-rc')).toBeUndefined()
+  await ui.unmount()
+  await runRc($)
+  ui = await mountDesktop($, 110)
+  expect((await btn(ui, 'btn-rc'))?.props.label).toBe('rc')
+  expect((await rcDot(ui))?.props.color).toBe('#4ade80')
+  await ui.press({ key: 'btn-rc' })
+  expect(calls.cmd.filter(c => c === 'remote-control').length).toBe(2)
+  await ui.unmount()
+})
+
+// ================= v1.4 第 14 项: 终端的新动作同步到客户端 (用户: "终端改了比如说搜网页 同步改到客户端") =================
+const crabD = (o: any = {}) => crabSvg({ mode: 'idle', kind: 'think', heat: 'ok', agents: 0, mood: 'normal', ...o }, 5)
+const hasRect = (svg: string, x: number, y: number, fill: string, w = 1, h = 1) => svg.includes(`<rect x="${x}" y="${y}" width="${w}" height="${h}" fill="${fill}"`)
+
+test('desktop search: a green radar ring with a sweeping light instead of the globe; when found, blips light up for 1.8 s and the right claw goes up', () => {
+  const run = crabD({ mode: 'work', kind: 'search' })
+  expect(hasRect(run, 13, 0, '#15803d')).toBe(true) // 雷达环 (和终端同一个绿)
+  expect(run).toContain('fill="#4ade80"') // 扫过去的亮点
+  expect(run).not.toContain('#3b82f6') // 不再是地球
+  const found = crabD({ mode: 'work', kind: 'think', end: { kind: 'search', ok: true, ms: 0, hits: 3 } })
+  expect((found.match(/class="blip"/g) ?? []).length).toBe(3)
+  expect(found).toMatch(/<set attributeName="opacity" to="0" begin="1.8s"/) // 1.8 秒后收起
+  expect(hasRect(found, 11, 0, 'currentColor', 1, 2)).toBe(true) // 右钳举起
+  const half = crabD({ mode: 'work', kind: 'think', end: { kind: 'search', ok: true, ms: 1000, hits: 9 } })
+  expect((half.match(/class="blip"/g) ?? []).length).toBe(5) // 最多 5 个
+  expect(half).toMatch(/<set attributeName="opacity" to="0" begin="0.8s"/) // 已经过了 1 秒: 还剩 0.8 秒
+})
+
+test('desktop fetch: the page flies in from the right with a blue bar and lines loading; when fetched it folds away with two sparkles (0.9 s)', () => {
+  const run = crabD({ mode: 'work', kind: 'fetch', toolMs: 0 })
+  expect(run).toMatch(/type="translate" values="4 0;0 0"[^>]*fill="freeze"/) // 从右边飞进来
+  expect(hasRect(run, 13, 0, '#60a5fa', 3, 1)).toBe(true) // 蓝条
+  expect(run).not.toContain('#3b82f6')
+  const done = crabD({ mode: 'work', kind: 'think', end: { kind: 'fetch', ok: true, ms: 0 } })
+  expect(done).toMatch(/attributeName="height" values="4;0"/) // 收起来
+  expect((done.match(/fill="#facc15"/g) ?? []).length).toBe(2) // 两点亮光
+  expect(done).toMatch(/<set attributeName="opacity" to="0" begin="0.9s"/)
+})
+
+test('desktop bash: types first, then output scrolls; the last line turns green when it finishes, red when it fails; after 15 s it steams', () => {
+  const early = crabD({ mode: 'work', kind: 'bash', toolMs: 1000 })
+  expect(early).toMatch(/<set attributeName="opacity" to="1" begin="0.35s"/) // 敲完命令 (1.35 秒) 开始滚输出
+  expect(early).toMatch(/class="impatient"[^>]*><set attributeName="opacity" to="1" begin="14s"/) // 15 秒时不耐烦
+  const late = crabD({ mode: 'work', kind: 'bash', toolMs: 15_000 })
+  expect(late).toMatch(/class="impatient"[^>]*><set attributeName="opacity" to="1" begin="0s"/)
+  expect(late).toContain('class="steam"')
+  const ok = crabD({ mode: 'work', kind: 'think', end: { kind: 'bash', ok: true, ms: 0 } })
+  expect(hasRect(ok, 13, 3, '#4ade80', 3, 1)).toBe(true)
+  expect(ok).toMatch(/<set attributeName="opacity" to="0" begin="0.6s"/)
+  const bad = crabD({ mode: 'work', kind: 'think', end: { kind: 'bash', ok: false, ms: 0 } })
+  expect(hasRect(bad, 13, 3, '#ef4444', 3, 1)).toBe(true)
+})
+
+test('desktop edit: one ink dot per claw tap (blue for a moment); when the edit is done the page flies up into the headroom', () => {
+  const run = crabD({ mode: 'work', kind: 'edit' })
+  expect((run.match(/class="ink"/g) ?? []).length).toBe(12)
+  expect(run).toContain('fill="#60a5fa"') // 刚点下去是蓝的
+  const done = crabD({ mode: 'work', kind: 'think', end: { kind: 'edit', ok: true, ms: 0 } })
+  expect(done).toMatch(/type="translate" values="0 0;0 -2"/)
+})
+
+test('desktop nap: dozes at 4 minutes (line eyes, drooping claws, nodding), sleeps in the sand with a nightcap at 5; waking pops it out and the cap flies off', () => {
+  const doze = crabD({ doze: true })
+  expect(doze).toContain('class="line-eye"')
+  expect(doze).not.toMatch(/dur="12s"/) // 不挥手
+  expect(hasRect(doze, 0, 3, 'currentColor', 2, 1)).toBe(true) // 钳子耷拉
+  const sleep = crabD({ mode: 'sleep' })
+  expect(sleep).toContain('fill="#c8a96a"') // 沙堆
+  expect(sleep).toContain('fill="#4f46e5"') // 睡帽
+  expect(sleep).toContain('class="line-eye"')
+  const burrow = crabD({ mode: 'sleep', sleepMs: 0 })
+  expect(burrow).toMatch(/type="translate" values="0 0;0 1"[^>]*fill="freeze"/) // 钻进沙里
+  const wake = crabD({ wake: { from: 'sand', ms: 0 } })
+  expect(wake).toContain('class="cap-off"') // 睡帽飞走
+  expect(wake).not.toContain('class="line-eye"')
+})
+
+test('desktop: while you type the crab looks down at the prompt; the sunglasses get a glint', () => {
+  expect(crabD({ typing: true })).toMatch(/<rect x="4" y="2" width="1" height="1" fill="#1c1917"/)
+  expect(crabD({ mood: 'chill' })).toContain('width="0.5" height="0.5" fill="#fafafa"')
+})
+
+const deskCrabSrc = async (ui: any) => String(((await ui.findAll({ type: 'Svg' })) as any[]).find(x => String(x.props.alt).includes('螃蟹'))?.props.source ?? '')
+
+test('desktop card follows the hooks: a running command schedules its 15 s steam; a failed one leaves a red line for a moment', { timeoutMs: 30_000 }, async ($, on) => {
+  let open: () => void = () => {}
+  const { clock } = await start($, on, WIN, { mockClock: 1_900_000_400_000, lang: 'zh', agents: () => [], usage: lowUsage, toolError: e => e.tool === 'Bash', toolGate: () => new Promise<void>(r => (open = r)) })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as any)
+  const ui = await mountDesktop($, 110, true)
+  const call = $.tool.call({ tool: 'Bash', command: 'npm test' } as any)
+  await clock.settle()
+  // 刚开始跑: 冒热气排在第 15 秒 (没把开始时间交给客户端的话会是第 0 秒)
+  expect(await deskCrabSrc(ui)).toMatch(/class="impatient"[^>]*><set attributeName="opacity" to="1" begin="15s"/)
+  open()
+  await call
+  await clock.settle()
+  expect(hasRect(await deskCrabSrc(ui), 13, 3, '#ef4444', 3, 1)).toBe(true) // 报错: 最后一行变红
+  await ui.unmount()
+})
+
+test('desktop card follows the hooks: long idle dozes at 4 minutes, then sleeps in the sand at 5; any activity wakes it', async ($, on) => {
+  let tnow = 1_900_000_500_000
+  await start($, on, WIN, { lang: 'zh', agents: () => [], usage: lowUsage, now: () => tnow })
+  const crab = async () => {
+    const ui = await mountDesktop($, 110)
+    const svg = await deskCrabSrc(ui)
+    await ui.unmount()
+    return svg
+  }
+  tnow += 4.5 * 60_000 // 从会话开始就没动静
+  expect(await crab()).toContain('class="line-eye"')
+  tnow += 60_000
+  const sleep = await crab()
+  expect(sleep).toContain('fill="#4f46e5"')
+  await ($ as any).prompt.edit({ origin: { kind: 'composer' }, text: 'b', cursor: 1, start: 0, end: 0, inputText: 'b' }) // 你回来打字了
+  const woke = await crab()
+  expect(woke).toContain('class="cap-off"') // 蹦出来, 睡帽飞走
+  expect(woke).not.toContain('class="line-eye"')
+})
+
 // ================= v0.21: the desktop SVG crab gets the same smoothness =================
 const deskCrab = (o: any = {}) => crabSvg({ mode: 'idle', kind: 'think', heat: 'ok', agents: 0, mood: 'normal', ...o }, 5)
 const moveAnims = (svg: string) => svg.match(/<animateTransform[^>]*>/g) ?? []
@@ -3606,4 +3940,394 @@ test('buttons that open a pane keep the press going until the pane is open (else
   await desk.unmount()
   const opens = calls.opens.filter((o: any) => o.id === 'hud-handoffs')
   expect(opens.map((o: any) => o.duringPress)).toEqual([true, true])
+})
+
+// ================= v1.4: the crab-moves spec (2026-10-09) — start, loop and ending of each tool =================
+const walkProps = async (ui: any) => ((await ui.find({ type: 'Client' })) as any)?.props?.props ?? {}
+
+test('WebSearch and WebFetch reach the crab strip as two kinds, search and fetch; each main-thread tool call gets its own number and its result (ok or not)', async ($, on) => {
+  let open: () => void = () => {}
+  const calls = await start($, on, WIN, { mockClock: T0, toolError: e => e.tool === 'Bash', toolGate: () => new Promise<void>(r => (open = r)) })
+  const band = await mountBand($, 140)
+  const seen: any[] = []
+  for (const [tool, kind] of [
+    ['WebSearch', 'search'],
+    ['WebFetch', 'fetch'],
+    ['Bash', 'bash'],
+  ]) {
+    const call = $.tool.call({ tool, query: 'x', url: 'https://a.b', command: 'ls' } as any)
+    await calls.clock.settle()
+    const during = await walkProps(band)
+    expect([tool, during.tool]).toEqual([tool, kind])
+    open()
+    await call
+    await calls.clock.settle()
+    const after = await walkProps(band)
+    seen.push([during.toolSeq, after.tool, after.toolEnd])
+  }
+  expect(seen).toEqual([
+    [1, '', { seq: 1, ok: true, hits: 0 }], // 搜索的收尾还带搜到几条 (这里没有结果)
+    [2, '', { seq: 2, ok: true }],
+    [3, '', { seq: 3, ok: false }],
+  ])
+  // 子代理的工具不算主会话的调用
+  const sub = $.tool.call({ tool: 'Read', file_path: 'a', agentId: 'k1' } as any)
+  await calls.clock.settle()
+  open()
+  await sub
+  await calls.clock.settle()
+  expect((await walkProps(band)).toolSeq).toBe(3)
+  await band.unmount()
+})
+
+// 终端屏幕在螃蟹右边 (12-14 列, 第 1-4 行); 散步道的像素行 = 螃蟹的行 + 2 (天空行)
+const CURSOR = 0x4ade80
+const PAPER = 0xd4d4d8
+const GREY = 0xa1a1aa
+const scr = (fr: any, y: number): number[] => fr.px[2 + y].slice(fr.bx + 12, fr.bx + 15)
+test('running a command (B): types the command with both claws, then watches the output scroll; when it finishes OK the last line turns green until the crab walks on', () => {
+  const S0 = 10
+  const END = 70
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 92, working: true, tool: f => (f >= S0 && f < END ? 'bash' : '') })
+  const at = (age: number) => r.frames[S0 + age]!
+  expect(scr(at(1), 4)[0]).toBe(CURSOR) // 提示符
+  expect(scr(at(7), 4)[1]).toBe(PAPER) // 打出第一个字
+  expect(scr(at(13), 4).slice(1)).toEqual([PAPER, PAPER])
+  const typing = r.frames.slice(S0 + 1, S0 + 17)
+  expect(typing.some(fr => armOf(fr, 'L') === 'up') && typing.some(fr => armOf(fr, 'R') === 'up')).toBe(true)
+  // 盯着输出: 钳子放下, 灰色的输出一行行往上滚, 身体不晃
+  const watch = r.frames.slice(S0 + 20, END)
+  expect(watch.every(fr => armOf(fr, 'L') === 'out' && armOf(fr, 'R') === 'out')).toBe(true)
+  expect(watch.every(fr => [1, 2, 3, 4].some(y => scr(fr, y).includes(GREY)))).toBe(true)
+  expect(new Set(watch.map(fr => JSON.stringify([1, 2, 3, 4].map(y => scr(fr, y))))).size > 5).toBe(true)
+  expect(new Set(watch.map(fr => bodySpan(fr).join())).size).toBe(1)
+  // 跑完 (成功): 停在原地, 最后一行整行变绿, 撑到收尾结束
+  const after = r.frames.slice(END, END + 6)
+  expect(after.every(fr => fr.pose === 'tool' && scr(fr, 4).every(c => c === CURSOR))).toBe(true)
+  expect(r.frames.slice(END + 12).some(fr => fr.pose === 'walk')).toBe(true)
+})
+
+test('running a command (B): a command that fails turns the last line red (the user chose red); a short one that ends while being typed still gets its ending', () => {
+  const failed = previewLane({ w: 80, sky: true, fine: true, frames: 60, working: true, ok: false, tool: f => (f >= 10 && f < 40 ? 'bash' : '') })
+  expect(failed.frames.slice(40, 46).every(fr => fr.pose === 'tool' && scr(fr, 4).every(c => c === ALARM))).toBe(true)
+  const quick = previewLane({ w: 80, sky: true, fine: true, frames: 30, working: true, tool: f => (f >= 10 && f < 14 ? 'bash' : '') })
+  expect(quick.frames.slice(14, 19).every(fr => fr.pose === 'tool' && scr(fr, 4).every(c => c === CURSOR))).toBe(true)
+})
+
+test('two commands back to back are two calls: the second one starts typing again', () => {
+  // 中间没有空档 (call 号变了), 第二条从敲命令开始: 又打出提示符, 钳子又在敲
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 80, working: true, tool: f => (f >= 10 && f < 70 ? 'bash' : ''), call: f => (f < 40 ? 1 : 2) })
+  expect(r.frames.slice(32, 40).every(fr => armOf(fr, 'L') === 'out')).toBe(true)
+  expect(r.frames.slice(41, 56).some(fr => armOf(fr, 'L') === 'up')).toBe(true)
+})
+
+// 改文件 B: 纸在螃蟹右边 (12-14 列, 第 1-4 行); 墨点按 [3, 2, 3, 2] 一行行写, 新点先蓝 2 帧
+const INK = 0x52525b
+const PAGE_ROWS = [1, 2, 3, 4]
+const page = (fr: any, sky = 2) => PAGE_ROWS.flatMap(y => fr.px[sky + y].slice(fr.bx + 12, fr.bx + 15))
+const inked = (fr: any, sky = 2) => page(fr, sky).filter((c: number) => c === INK || c === SWEAT).length
+test('editing a file (B): the right claw taps and each tap leaves one ink dot (blue first, then ink), body still', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 60, working: true, tool: f => (f >= 10 && f < 40 ? 'edit' : '') })
+  const at = (age: number) => r.frames[10 + age]!
+  expect([1, 5, 9, 29].map(a => inked(at(a)))).toEqual([1, 2, 3, 8])
+  expect(page(at(4)).includes(SWEAT)).toBe(true) // 刚写的那一点是蓝的
+  expect(page(at(6)).includes(SWEAT)).toBe(false)
+  const run = r.frames.slice(10, 40)
+  expect(new Set(run.map(fr => armOf(fr, 'R')))).toEqual(new Set(['out', 'mid', 'up']))
+  expect(run.every(fr => armOf(fr, 'L') === 'out')).toBe(true)
+  expect(new Set(run.map(fr => bodySpan(fr).join())).size).toBe(1)
+})
+
+test('editing a file (B): when the edit finishes, the written page flies up into the sky row, a blank page takes its place, two specks of dust rise, then the crab walks on', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 70, working: true, tool: f => (f >= 10 && f < 40 ? 'edit' : '') })
+  const sky = (fr: any) => [0, 1].flatMap(y => fr.px[y].slice(fr.bx + 12, fr.bx + 15))
+  const inSky = (fr: any) => sky(fr).some((c: number) => c === PAPER || c === INK)
+  expect(inSky(r.frames[39]!)).toBe(false)
+  expect(inSky(r.frames[41]!)).toBe(true) // 写过的那页飞进天空行
+  expect(inSky(r.frames[47]!)).toBe(false) // 飞出去了, 不停在天空行里
+  expect(page(r.frames[45]!).every((c: number) => c === PAPER)).toBe(true) // 下面换上一张白纸
+  expect(r.frames.slice(43, 47).some(fr => fr.pt.some((p: any) => p.y < 0 && p.x >= fr.hx + 20))).toBe(true) // 扬起两点灰
+  expect(r.frames.slice(40, 46).every(fr => fr.pose === 'tool')).toBe(true)
+  expect(r.frames.slice(52).some(fr => fr.pose === 'walk')).toBe(true)
+  // 一次很快的修改: 写了一点就翻页
+  const quick = previewLane({ w: 80, sky: true, fine: true, frames: 30, working: true, tool: f => (f >= 10 && f < 12 ? 'edit' : '') })
+  expect(inSky(quick.frames[13]!)).toBe(true)
+})
+
+test('editing a file (B): a long write fills the page, pauses, flips and starts a new one by itself; without a sky row the old page just disappears', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 80, working: true, tool: f => (f >= 10 ? 'edit' : '') })
+  const at = (age: number) => r.frames[10 + age]!
+  expect(inked(at(44))).toBe(10) // 写满, 停一拍
+  expect([0, 1].some(y => at(50).px[y]!.slice(at(50).bx + 12, at(50).bx + 15).includes(PAPER))).toBe(true) // 自己翻页
+  expect(inked(at(55))).toBe(1) // 新的一页
+  const flat = previewLane({ w: 80, sky: false, fine: true, frames: 30, working: true, tool: f => (f >= 10 && f < 20 ? 'edit' : '') })
+  expect(page(flat.frames[23]!, 0).every((c: number) => c === PAPER)).toBe(true)
+  expect(page(flat.frames[20]!, 0).some((c: number) => c === INK || c === SWEAT)).toBe(false)
+})
+
+// 跑命令 C: 同一条命令跑了约 15 秒 (200 帧) 以后等得不耐烦: 敲桌面、跺脚, 机器冒热气; 眼睛一直盯着屏幕 (用户 2026-10-10: 不回头看你)
+test('running a command (C): after about 15 s on the same command the crab taps the desk and stamps, steam rises from the screen, and it never looks away from the screen', () => {
+  const S0 = 10
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 300, working: true, tool: f => (f >= S0 ? 'bash' : '') })
+  const at = (age: number) => r.frames[S0 + age]!
+  // 15 秒以前还是 B: 钳子放下盯着输出
+  expect(r.frames.slice(S0 + 30, S0 + 195).every(fr => armOf(fr, 'R') === 'out')).toBe(true)
+  const tap = r.frames.slice(S0 + 205, S0 + 230) // C 的前半段: 右钳每 2 帧在 半举 / 平伸 之间敲桌面
+  expect(new Set(tap.map(fr => armOf(fr, 'R')))).toEqual(new Set(['mid', 'out']))
+  // 后半段跺脚: 腿的样子会变
+  const stomp = r.frames.slice(S0 + 233, S0 + 262)
+  const legs = (fr: any) => JSON.stringify(fr.px[2 + 4].slice(fr.bx, fr.bx + 12).map((c: number) => (c === BODY ? 1 : 0)))
+  expect(new Set(stomp.map(legs)).size > 1).toBe(true)
+  // 眼睛一直往屏幕那边看 (look = 1: 眼睛在第 5、8 列), 不回头
+  const C = r.frames.slice(S0 + 200, S0 + 290)
+  expect(C.every(fr => fr.px[3]![fr.bx + 4] !== EYE)).toBe(true)
+  // 屏幕: 最下面一行一个绿色的进度点来回跳
+  expect(new Set(C.map(fr => scr(fr, 4).indexOf(CURSOR))).size).toBe(3)
+  // 热气: 屏幕上方的天空行里冒灰点
+  expect(C.some(fr => fr.pt.some((p: any) => p.y < 0 && p.x - fr.hx >= 24 && p.x - fr.hx <= 30))).toBe(true)
+  // 15 秒以前没有热气
+  expect(r.frames.slice(S0, S0 + 195).some(fr => fr.pt.some((p: any) => p.y < 0 && p.x - fr.hx >= 24 && p.x - fr.hx <= 30))).toBe(false)
+  expect(at(0).pose).toBe('tool')
+})
+
+// 抓网页 D+: 带蓝条的网页从右边飞进来, 一行行加载; 抓完 (工具结束) 收进去、冒两点亮光; 天空行写真网址, 抓完变紫
+const SEA = 0x3b82f6
+const SEA_HI = 0x93c5fd
+const VISITED = 0xa78bfa
+const SPARK = 0xfacc15
+// 某一帧螃蟹右边 (相对 bx 的第 x0..x1 列, 第 1-4 行) 里纸和蓝条的列
+const pageCols = (fr: any, x0 = 12, x1 = 30) => {
+  const cols = new Set<number>()
+  for (const y of [1, 2, 3, 4]) fr.px[2 + y].forEach((c: number, x: number) => {
+    const dx = x - fr.bx
+    if (dx >= x0 && dx <= x1 && (c === PAPER || c === SEA)) cols.add(dx)
+  })
+  return [...cols].sort((a, b) => a - b)
+}
+test('fetching a page (D+): the page flies in from the right, the crab catches it, the content loads line by line', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 60, working: true, arg: 'code.claude.com/docs', tool: f => (f < 40 ? 'fetch' : '') })
+  expect(Math.min(...pageCols(r.frames[0]!))).toBeGreaterThan(18) // 从右边飞进来
+  expect(pageCols(r.frames[6]!)).toEqual([12, 13, 14]) // 停在道具区
+  expect([5, 6, 7].every(a => armOf(r.frames[a]!, 'R') === 'up')).toBe(true) // 接住
+  const ink = (fr: any) => [2, 3, 4].flatMap(y => fr.px[2 + y].slice(fr.bx + 12, fr.bx + 15)).filter((c: number) => c === INK).length
+  expect([10, 14, 20, 30].map(a => ink(r.frames[a]!))).toEqual([0, 3, 5, 8])
+  expect(page(r.frames[30]!).includes(SEA)).toBe(true) // 顶上一条蓝
+})
+
+test('fetching a page (D+): the real URL sits above the crab, underlined; when the fetch finishes the page folds away, two sparkles rise and the URL turns visited purple', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 60, working: true, arg: 'code.claude.com/docs', tool: f => (f < 40 ? 'fetch' : '') })
+  const cap = r.frames[20]!.caption
+  expect(cap.map((c: any) => [c.x - r.frames[20]!.bx, c.text, c.color])).toEqual([[16, 'code.claude.com/docs', SEA_HI]])
+  const under = r.frames[20]!.px[2]!.slice(r.frames[20]!.bx + 16, r.frames[20]!.bx + 36)
+  expect(under.every((c: number) => c >= 0 && c !== SEA_HI)).toBe(true) // 下划线: 暗一点的蓝, 和字一样长
+  expect(r.frames[20]!.px[2]![r.frames[20]!.bx + 36]).toBe(-1)
+  expect(pageCols(r.frames[44]!)).toEqual([]) // 收进去了
+  expect(r.frames.slice(44, 48).some(fr => fr.pt.some((p: any) => p.y < 0 && p.color !== undefined))).toBe(true)
+  expect(r.frames[42]!.caption[0]!.color).toBe(VISITED)
+  // 抓失败: 网址不变紫
+  const bad = previewLane({ w: 80, sky: true, fine: true, frames: 50, working: true, ok: false, arg: 'x.com', tool: f => (f < 40 ? 'fetch' : '') })
+  expect(bad.frames[42]!.caption[0]!.color).toBe(SEA_HI)
+})
+
+test('fetching a page (D+): near the right end the page appears in place without flying, and the URL is cut to fit or left out; without a sky row there is no URL', () => {
+  const tight = previewLane({ w: 34, sky: true, fine: true, frames: 10, working: true, arg: 'code.claude.com/docs/en/plugins', tool: 'fetch' })
+  expect(pageCols(tight.frames[0]!)).toEqual([12, 13, 14])
+  for (const fr of tight.frames) for (const c of fr.caption) expect(c.x + dwT(c.text) <= 34).toBe(true)
+  const flat = previewLane({ w: 80, sky: false, fine: true, frames: 10, working: true, arg: 'code.claude.com', tool: 'fetch' })
+  expect(flat.frames.every(fr => fr.caption.length === 0)).toBe(true)
+})
+
+test('while a wide prop is out on the right (fetch / search), a bubble goes to the left of the crab', () => {
+  const L = newLane(80, 3, true)
+  expect(bubbleSpot(L, 'Your call')!.x).toBeGreaterThan(L.bx)
+  expect(bubbleSpot(L, 'Your call', true)!.x).toBeLessThan(L.bx)
+})
+
+test('WebFetch passes its URL (without the protocol) and WebSearch its query to the crab strip; a search passes back its first link and how many results it found', async ($, on) => {
+  const calls = await start($, on, WIN, {
+    mockClock: T0,
+    toolResult: e => (e.tool === 'WebSearch' ? { query: 'claude mods', results: [{ tool_use_id: 'x', content: [{ title: 'A', url: 'https://claude.com/mods' }, { title: 'B', url: 'https://b.dev' }] }, 'some text', { tool_use_id: 'y', content: [{ title: 'C', url: 'https://c.io' }] }], durationSeconds: 1 } : {}),
+  })
+  const band = await mountBand($, 140)
+  await $.tool.call({ tool: 'WebFetch', url: 'https://code.claude.com/docs', prompt: 'x' } as any)
+  await calls.clock.settle()
+  expect((await walkProps(band)).toolArg).toBe('code.claude.com/docs')
+  await $.tool.call({ tool: 'WebSearch', query: 'claude mods' } as any)
+  await calls.clock.settle()
+  const p = await walkProps(band)
+  expect(p.toolArg).toBe('claude mods')
+  expect(p.toolEnd).toMatchObject({ ok: true, link: 'claude.com/mods', hits: 3 })
+  await band.unmount()
+})
+
+// 上网 S2 雷达 (用户 2026-10-10 选的): 5 行的绿圈 (只画圈), 扫描线 16 帧转一圈, 天空行打出搜索词;
+//   搜到了亮起光点 (结果条数, 最多 5 个), 搜索词换成第一条结果链接和「+还有几条」; 「找到了」撑 1.8 秒
+const RING = 0x15803d
+const SWEEP = 0x4ade80
+const radarAt = (fr: any, c: number) => {
+  const out: string[] = []
+  fr.hpx.forEach((row: number[], y: number) => row.forEach((v, hx) => { if (v === c) out.push(hx - fr.hx + ',' + (y - 2)) }))
+  return out.sort()
+}
+test('searching (S2 radar): a green ring right of the crab with a sweep line turning once every 16 frames; the query is typed in the sky row', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 60, working: true, arg: 'claude mods', word: '搜', tool: f => (f < 50 ? 'search' : '') })
+  const ring = radarAt(r.frames[20]!, RING)
+  expect(ring.length > 10).toBe(true)
+  expect(ring.every(p => { const [hx, y] = p.split(',').map(Number); return hx! >= 26 && hx! <= 35 && y! >= 0 && y! <= 4 })).toBe(true)
+  const sweep = (f: number) => radarAt(r.frames[f]!, SWEEP).join(' ')
+  expect(sweep(20)).not.toBe(sweep(24)) // 在转
+  expect(sweep(20)).toBe(sweep(36)) // 16 帧一圈
+  const text = (f: number) => r.frames[f]!.caption.map((c: any) => c.text).join('')
+  expect(r.frames[10]!.caption[0]!.x - r.frames[10]!.bx).toBe(20)
+  expect(text(6)).toBe('搜 c') // 每 2 帧一个字
+  expect(text(40).startsWith('搜 claude mods.')).toBe(true) // 打完了, 后面点点
+})
+
+test('searching (S2 radar): when results come back, blips light up (one per result, at most 5), the link and "+N more" replace the query, the crab raises a claw, and it stays like that for about 1.8 s', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 80, working: true, arg: 'claude mods', word: '搜', link: 'claude.com/mods', hits: 8, tool: f => (f < 30 ? 'search' : '') })
+  const blips = (f: number) => r.frames[f]!.hpx.flat().filter((c: number) => c === SPARK || c === 0xfafafa).length
+  expect(blips(28)).toBe(0)
+  expect(blips(34)).toBe(5)
+  const cap = r.frames[34]!.caption
+  expect(cap.map((c: any) => [c.text, c.color, c.under])).toEqual([
+    ['claude.com/mods', SEA_HI, true],
+    ['+7', 0x71717a, false],
+  ])
+  expect(armOf(r.frames[33]!, 'R')).toBe('up')
+  expect(r.frames.slice(30, 52).every(fr => fr.pose === 'tool')).toBe(true) // 「找到了」撑约 1.8 秒
+  expect(r.frames.slice(60).some(fr => fr.pose === 'walk')).toBe(true)
+  // 搜失败: 不亮光点, 也没有链接
+  const bad = previewLane({ w: 80, sky: true, fine: true, frames: 40, working: true, ok: false, arg: 'x', word: '搜', link: 'a.com', hits: 3, tool: f => (f < 20 ? 'search' : '') })
+  expect(bad.frames[24]!.hpx.flat().filter((c: number) => c === SPARK || c === 0xfafafa).length).toBe(0)
+  expect(bad.frames[24]!.caption.some((c: any) => c.text.includes('a.com'))).toBe(false)
+})
+
+test('the crab strip gets the word in front of the query in the panel language (搜 / search)', async ($, on) => {
+  await start($, on, WIN, { mockClock: T0, lang: 'zh' })
+  const zh = await mountBand($, 140)
+  expect((await walkProps(zh)).searchWord).toBe('搜')
+  await zh.unmount()
+  await $.command.run({ command: 'hud', args: 'lang en' } as any)
+  const en = await mountBand($, 140)
+  expect((await walkProps(en)).searchWord).toBe('search')
+  await en.unmount()
+})
+
+// 睡觉组合 (定稿 G + H + I): 闲 4 分钟打瞌睡 -> 5 分钟睁着眼钻进沙里 -> 闭成一字眼 -> 睡帽掉下来 -> 戴着睡帽睡;
+//   一来活就蹦出来 (0.6 秒内), 睡帽弹飞、沙子炸开在背景里接着播 (用户 2026-10-10)
+const DOZE = 3200 // 4 分钟 (75ms 一帧)
+const SLEEP = 4000 // 5 分钟
+const SAND = 0xc8a96a
+const CAP = 0x4f46e5
+const BRIM = 0xe4e4e7
+const crabRows = (fr: any) => fr.px.slice(2)
+const has = (fr: any, c: number) => fr.px.flat().includes(c)
+// 一字眼: 眼睛那一行连着两格眼睛色 (左眼 3-4 / 右眼 7-8, 看前面时)
+const lineEyes = (fr: any) => crabRows(fr).some((row: number[]) => row[fr.bx + 3] === EYE && row[fr.bx + 4] === EYE && row[fr.bx + 7] === EYE && row[fr.bx + 8] === EYE)
+test('sleep (G): after 4 idle minutes the crab dozes — its eyes close into lines, its head drops and its claws hang down, it jolts awake once and nods off again', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 80, working: false, idle: f => DOZE + f })
+  expect(r.frames.every(fr => fr.pose === 'doze')).toBe(true)
+  expect(lineEyes(r.frames[3]!)).toBe(false) // 刚开始还醒着
+  expect(lineEyes(r.frames[18]!)).toBe(true) // 眼皮合上: 一字眼
+  const hang = (fr: any) => fr.px[bodySpan(fr)[0] + 4]?.[fr.bx] === BODY && fr.px[bodySpan(fr)[0] + 3]?.[fr.bx + 1] === BODY
+  expect(hang(r.frames[18]!)).toBe(true) // 钳子耷拉 (往下)
+  expect(bodySpan(r.frames[18]!)[0]).toBe(bodySpan(r.frames[3]!)[0] + 1) // 头往下一点
+  expect(armOf(r.frames[24]!, 'L')).toBe('mid') // 猛地醒一下
+  expect(has(r.frames[40]!, SAND) || has(r.frames[40]!, CAP)).toBe(false) // 打瞌睡时还没有沙子和睡帽
+})
+
+test('sleep (H): at 5 minutes it digs into the sand with its eyes open, then its eyes close into lines; the nightcap drops on; then it sleeps in the cap, breathing, with bubbles and an occasional one-eyed peek', () => {
+  const r = previewLane({ w: 80, sky: true, fine: true, frames: 340, working: false, idle: f => SLEEP + f })
+  expect(r.frames.every(fr => fr.pose === 'sleep')).toBe(true)
+  expect(crabRows(r.frames[2]!)[5].slice(r.frames[2]!.bx, r.frames[2]!.bx + 12).every((c: number) => c === SAND)).toBe(true) // 沙堆
+  expect(lineEyes(r.frames[4]!)).toBe(false) // 钻的时候睁着眼
+  expect(bodySpan(r.frames[20]!)[0]).toBeGreaterThan(bodySpan(r.frames[0]!)[0]) // 往沙里沉
+  expect(r.frames.slice(0, 18).some(fr => fr.pt.some((p: any) => p.color === SAND))).toBe(true) // 刨出来的沙粒
+  expect(lineEyes(r.frames[22]!)).toBe(true) // 钻好了才闭眼
+  expect(has(r.frames[22]!, CAP)).toBe(false)
+  expect(has(r.frames[26]!, CAP)).toBe(true) // 睡帽从上面掉下来
+  expect(has(r.frames[60]!, CAP) && has(r.frames[60]!, BRIM)).toBe(true) // 戴着睡帽睡
+  const tops = new Set(r.frames.slice(40, 120).map(fr => bodySpan(fr)[0]))
+  expect(tops.size).toBe(2) // 一浮一沉
+  expect(r.frames.slice(40, 200).some(fr => fr.pt.length > 0)).toBe(true) // 泡泡
+  expect(r.frames.slice(32, 340).some(fr => !lineEyes(fr))).toBe(true) // 中间睁一只眼看看
+})
+
+test('sleep (I): any activity wakes it at once — it pops out of the sand into the sky row within 0.6 s, the cap flies off and sand bursts in the background, then it does what is next (types, greets, works)', () => {
+  const W = 60
+  for (const [what, opt, want] of [
+    ['typing', { typing: (f: number) => f >= W }, 'type'],
+    ['hover', { hold: (f: number) => f >= W }, 'greet'],
+    ['work', { working: (f: number) => f >= W }, 'walk'],
+  ] as const) {
+    const r = previewLane({ w: 80, sky: true, fine: true, frames: W + 30, working: false, idle: (f: number) => (f < W ? SLEEP + 100 + f : 0), ...(opt as any) })
+    const pop = r.frames.slice(W, W + 8)
+    expect([what, pop.every(fr => fr.pose === 'wake')]).toEqual([what, true])
+    expect([what, pop.some(fr => bodySpan(fr)[0] < 2)]).toEqual([what, true]) // 蹦进天空行
+    expect([what, r.frames[W + 8]!.pose]).toEqual([what, want])
+    expect([what, r.frames.slice(W + 1, W + 10).some(fr => fr.pt.some((p: any) => p.color === SAND))]).toEqual([what, true]) // 沙子炸开
+    const capCols = (fr: any) => fr.hpx.flatMap((row: number[]) => row.map((c, hx) => (c === CAP ? hx - fr.hx : -999)).filter(x => x > -999))
+    expect([what, capCols(r.frames[W + 3]!).length > 0 && Math.max(...capCols(r.frames[W + 3]!)) > 20]).toEqual([what, true]) // 睡帽往右上弹飞
+    expect([what, has(r.frames[W + 16]!, CAP)]).toEqual([what, false])
+  }
+})
+
+test('sleep: a panicking crab never dozes off; normal blinks stay the old half-closed style (the line eyes are only for sleeping and dozing); the sunglasses get a white glint', () => {
+  const panic = previewLane({ w: 80, sky: true, fine: true, frames: 40, working: false, mood: 'panic', idle: f => SLEEP + 500 + f })
+  expect(panic.frames.every(fr => fr.pose === 'idle' && !has(fr, SAND) && !has(fr, CAP))).toBe(true)
+  const awake = previewLane({ w: 80, sky: true, fine: true, frames: 130, working: false })
+  expect(awake.frames.some(lineEyes)).toBe(false)
+  const chill = previewLane({ w: 80, sky: true, fine: true, frames: 10, working: false, mood: 'chill' })
+  expect(chill.frames.every(fr => fr.hpx.flat().includes(0xfafafa))).toBe(true)
+})
+
+test('in the real crab strip: a fetch writes its URL in the sky row (purple once fetched), a bubble during it sits left of the crab; a search types its query, then shows the link and +N', { timeoutMs: 60_000 }, async ($, on) => {
+  let open: () => void = () => {}
+  const T = 1_900_000_300_000
+  const { clock } = await start($, on, WIN, {
+    mockClock: T,
+    usage: lowUsage,
+    agents: () => [],
+    lang: 'zh',
+    toolGate: () => new Promise<void>(r => (open = r)),
+    toolResult: e => (e.tool === 'WebSearch' ? { query: 'claude mods', results: [{ tool_use_id: 'x', content: [{ title: 'A', url: 'https://claude.com/mods' }, { title: 'B', url: 'https://b.dev' }, { title: 'C', url: 'https://c.io' }] }], durationSeconds: 1 } : {}),
+  })
+  const ui = await mountAbove($, 110, 4, { working: true })
+  await $.turn.start({ text: 'hi', turnId: 't1' } as any)
+  await clock.advance(10)
+  await ui.advance(1500)
+  const colOf = (w: any, row: number, ch: string) => w.rows[row].findIndex((c: any) => c.ch === ch)
+  // 抓网页: 天空行写网址; 这时来一个气泡 (等你点头), 放在螃蟹左边
+  let call = $.tool.call({ tool: 'WebFetch', url: 'https://code.claude.com/docs', prompt: 'x' } as any)
+  await clock.settle()
+  await ui.advance(1200)
+  let w = await walkOf(ui)
+  expect(w.text[0]).toContain('code.claude.com/docs')
+  await $.classic.PermissionRequest({ tool_name: 'WebFetch' } as any)
+  await clock.advance(400) // 气泡跟着面板的帧钟送过去
+  await ui.advance(300)
+  w = await walkOf(ui)
+  const bubbleAt = colOf(w, 1, '等')
+  expect(bubbleAt >= 0 && bubbleAt < (w.bx ?? -1)).toBe(true)
+  open()
+  await call
+  await clock.settle()
+  await ui.advance(300)
+  w = await walkOf(ui)
+  expect(w.rows[0]![colOf(w, 0, 'd')]!.fg).toBe(0xa78bfa) // 抓完变紫
+  await ui.advance(1500)
+  // 搜索: 一个字一个字打出「搜 claude mods」, 搜到了换成第一条链接和「+2」
+  call = $.tool.call({ tool: 'WebSearch', query: 'claude mods' } as any)
+  await clock.settle()
+  await ui.advance(2500)
+  w = await walkOf(ui)
+  expect(w.text[0]).toContain('搜 claude mods')
+  open()
+  await call
+  await clock.settle()
+  await ui.advance(300)
+  w = await walkOf(ui)
+  expect(w.text[0]).toContain('claude.com/mods')
+  expect(w.text[0]).toContain('+2')
+  await ui.unmount()
 })

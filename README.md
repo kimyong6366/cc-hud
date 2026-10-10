@@ -22,6 +22,7 @@ English | [简体中文](README.zh-CN.md)
 - **A usage panel under the prompt.** It shows:
   - model and effort, project and git branch, session time and cost
   - context, 5-hour and weekly quota bars, with a time tick and an "out in 40m" warning when you're burning quota too fast
+  - how much of the weekly quota you've used today against your daily share (`today 21% · 20%/day`), and a green `● rc` while Remote Control is on
   - what Claude is doing right now, your most-used tools, and total tokens
 - **One-click handoff prompts.** When a session gets long, click `[handoff]`: Claude writes a self-contained prompt for continuing in a fresh session, and the mod copies it to your clipboard and saves it to a file. Click `[clear & continue]` (or open a new session in the same project) and the prompt is already filled in. `[history]` lists your earlier handoffs. At 85% context the button turns orange to remind you.
 - **A subagent board.** It shows every running subagent, workflow agents included, and what each one is doing right now (`Bash npm test`, `Read src/app.ts`, …), grouped by workflow.
@@ -99,18 +100,22 @@ The panel starts with a small toolbar, `[settings] [handoff] [history]`, followe
 
 The 5-hour and weekly bars each carry a bright `│` tick that marks how much of the window has passed, and a short countdown to the reset follows the bar, such as `1h54m`. When the colored part runs past the tick, you are using quota faster than the clock.
 
+**Today's share** sits at the right end of the toolbar: `today 21% · 20%/day` means you've used 21% of the weekly quota today, and your share is 20% a day. The share is what was left at your first reading of the day, divided by the days until the weekly reset (today included), so it holds steady all day. Today's number turns orange once it passes the share, and the crab starts to sweat even if the week as a whole is on pace. When room runs short it becomes `today 21/20%`, then `21/20%`; it steps aside while `[settings]` is open. The first reading is shared by all your sessions that day. The day you install cc-hud starts from that moment, so it shows `today 0%` until you use more.
+
 **The crab above the prompt** (terminal only) lives in a strip right above the input box: one blank row that keeps it apart from the conversation, then three rows of crab. It follows what Claude is doing:
 
 | Claude is | The crab |
 |---|---|
 | Thinking or replying | Walks sideways, eyes on where it's going; thinking dots rise while it thinks |
-| Reading or searching | Stops and reads a page while a scan line moves |
-| Writing or editing a file | Stops and taps with its right claw as the page fills with text |
-| Running a command | Stops and types with both claws, terminal cursor blinking |
-| On the web | Stops beside a spinning globe |
+| Reading or searching files | Stops and reads a page while a scan line moves |
+| Writing or editing a file | Stops and taps with its right claw; each tap leaves one ink dot on the page. When the edit is done, the page flies up into the blank row and a fresh one takes its place |
+| Running a command | Stops and types the command with both claws, then watches the output scroll. When it finishes, the last line turns green (red if it failed). After about 15 seconds on the same command it gets impatient: taps the desk, stamps its feet, and the screen steams |
+| Searching the web | A green radar sweeps beside it while the query is typed above its head; when results come back, blips light up and the first link appears with how many more (`claude.com +7`) |
+| Fetching a page | A page flies in from the right and loads line by line, with the URL written above; when it's fetched, the page folds away and the URL turns purple |
 | Running subagents | Each running subagent, workflow agents included, adds a baby crab to the line; when it finishes, its crab waves and leaves. The status cell says how many ("+3 agents") |
 | Done with a turn | Hops twice with claws up, really leaving the ground, then keeps its claws up; gold sparkles |
-| Idle / idle for 5 minutes | Strolls a few steps now and then, blinks and looks around / sleeps, blowing bubbles |
+| Idle | Strolls a few steps now and then, blinks and looks around |
+| Idle for 4 / 5 minutes | Dozes off: its eyes close into lines and its head nods / digs into the sand, puts on a nightcap and sleeps, blowing bubbles and peeking with one eye now and then. Anything that happens (work, your typing, your pointer, a quota scare) makes it pop out at once, the cap flying off |
 | You type / you send | Stops and looks down at the input box / crouches, jumps up into the blank row above, lands with a squash and a puff of dust |
 | At ≥ 80% context | Fades to red over about a second and sweats; at ≥ 95% pulses red smoothly |
 
@@ -130,12 +135,13 @@ Every move has in-between frames:
 | Quota | The crab | The panel |
 |---|---|---|
 | Using less than the clock (pace < 0.8) | Wears sunglasses, strolls | Normal |
+| Today's use is past your daily share (see the toolbar) | Sweats, walks faster | Today's number on the toolbar turns orange |
 | Clearly ahead of pace, on track to run out before the reset | Sweats, walks faster | The percentage and the countdown turn red: `out 40m` |
 | Runs out within 30 minutes, or ≥ 95% used | Panics: flings sweat up off its head, also while it works; when idle it flails its claws in turn with a red "!" beside it; scurries when walking | Same as above |
 
-- Small particles keep it lively: dust behind its feet, a drop of sweat when it hurries, gold sparkles when a turn finishes, bubbles while it sleeps.
+- Small particles keep it lively: dust behind its feet, a drop of sweat when it hurries, gold sparkles when a turn finishes, sand when it digs in, steam when a command drags on, bubbles while it sleeps.
 - Speech bubbles appear beside the crab for a few seconds: a finished turn (「Done 3m12s」), a finished compaction (「Compacted」), a quota reset (「Quota's back」), a red pace warning (「Slow down! out in 40m」), context filling up (「Context almost full」, then 「Handoff?」 at 85%), and a permission prompt waiting for you (「Your call」).
-- In fullscreen mode (`/tui fullscreen`), point at the crab: it stops, waves, and holds a bubble with your usage and a tip until you move away. Point elsewhere on the strip and its eyes follow the pointer. No click needed; a click moves the keyboard focus to the strip, and Esc gives it back.
+- In fullscreen mode (`/tui fullscreen`), point at the crab: it stops, waves, and holds a bubble with your usage and a tip until you move away (a sleeping crab pops out first). Point elsewhere on the strip and its eyes follow the pointer. No click needed; a click moves the keyboard focus to the strip, and Esc gives it back.
 - The row between the strip and the input box belongs to Claude Code itself (notices such as "copied 4 chars to clipboard" appear there), so the strip can't sit any lower.
 - The engine draws `[-]` at the strip's right end: click it or press ctrl+x ctrl+a to fold the strip away. `/hud crab off` turns it off for good. In a short terminal the strip drops its blank row first, then shrinks to two rows, one row, or hides.
 
@@ -149,6 +155,8 @@ Every move has in-between frames:
 - **Crab**: the walking crab above the prompt.
 - **Panel**: full grid, one-line compact, or hidden. The one-line layout has no room for the toolbar, and hiding the panel hides it too; `/hud` brings the full panel back.
 - Clicking needs fullscreen rendering (`/tui fullscreen`). On the default (main-screen) renderer the terminal keeps mouse clicks for itself, so the toolbar shows a dim hint, `clicks need /tui fullscreen, or type /hud handoff`, in place of `[history]`, and the `/hud` commands do the same jobs.
+
+**Remote Control**: in fullscreen, Claude Code puts its `/rc` label after the path in the logo at the top, which scrolls away once the conversation grows. So while Remote Control is on, a green `● rc` sits at the right end of the toolbar; click it for Claude Code's Remote Control dialog (session link, QR code, Disconnect). cc-hud can't read Remote Control's state, so it goes by the `/remote-control` you run: it appears when you turn it on and goes away when you disconnect. It won't notice a dropped or reconnecting connection, or Remote Control started by the `remoteControlAtStartup` setting. On the default renderer Claude Code shows its own `/rc` at the bottom right, so cc-hud adds nothing there. After `/reload-plugins`, cc-hud has forgotten it: run `/remote-control` again and choose Continue.
 
 **Handoff prompts**: click `[handoff]` (or run `/hud handoff`) when you want to continue in a fresh session. Claude writes a self-contained handoff prompt using the whole conversation, so the next session can pick up where you left off:
 
@@ -199,12 +207,16 @@ In the desktop app, the panel becomes a dedicated SVG card (crab + dashboard) ab
 - claws pass through a half-raised pose, and blinks go half-closed first
 - a finished turn makes it really hop twice, and a sent message makes it jump
 - red fades in over a second, and pulses smoothly at 95%
+- it acts out the same tool moves as the terminal crab, shrunk to its 16 × 8 picture: a green radar while searching the web (blips light up when results come back), a page flying in while fetching (it folds away when done), a terminal whose last line turns green or red, an ink dot per claw tap and a page flipping away for edits, and steam once a command runs about 15 seconds
+- it dozes after 4 idle minutes, sleeps in the sand with a nightcap after 5, and pops out when anything happens
+- it has no blank row above it, so URLs and search terms aren't written out; the card can't tell when the pointer is on it, so there's no greeting. It looks down at the prompt while you type only if the desktop app reports typing to mods
 
 **Buttons in the desktop app.** Above the card sit the app's own native buttons:
 - **Settings** opens three dropdowns: Lang, Crab and Panel.
 - **Handoff** writes a handoff prompt. It turns into the app's primary button once context reaches 85%, and shows "Writing handoff…" while Claude writes.
 - The desktop app can't copy to the clipboard from a mod yet, so the handoff is saved to a file and an **Open handoff file** button opens it in your default editor.
 - **Handoff history** opens the same history pane as in the terminal. The app probably won't let a mod fill its prompt box, so use **Open** there.
+- At the right end: today's share of the weekly quota (`today 21% · 20%/day`) and, after `/remote-control`, the green `● rc`, the same as in the terminal.
 
 Clicks work in the desktop app without any extra setting.
 

@@ -4,6 +4,26 @@ English | [简体中文](CHANGELOG.zh-CN.md)
 
 Notable changes to cc-hud, newest first. Each version matches `version` in `cc-hud/.claude-plugin/plugin.json`.
 
+## 1.4.0 (2026-10-10)
+
+### Added
+
+- **Today's share of the weekly quota**, at the right end of the toolbar: `today 21% · 20%/day`. The daily share is what was left at your first reading of the day, divided by the days until the weekly reset (today included), so it holds steady all day; all of the day's sessions share that first reading. Once today's use passes the share, the number turns orange and the crab starts to sweat, even if the week as a whole is on pace. It shortens to `today 21/20%` or `21/20%` when room runs short, steps aside while `[settings]` is open, and sits last on the one-line panel when there's room. The desktop app's toolbar row shows the full sentence too. The grid itself is unchanged.
+- **Remote Control indicator**: in fullscreen, Claude Code shows its `/rc` label after the path in the logo at the top, so it scrolls away once the conversation grows. While Remote Control is on, the toolbar now shows a green `● rc` at its right end (in the one-line panel, right after the buttons). Click it to open Claude Code's Remote Control dialog (session link, QR code, Disconnect). cc-hud can't read Remote Control's state, so it follows the `/remote-control` you run: it appears when you turn it on and goes away when you disconnect. It doesn't notice a dropped or reconnecting connection, or Remote Control started by the `remoteControlAtStartup` setting. On the default renderer Claude Code draws its own `/rc` at the bottom right, so cc-hud doesn't add one. After `/reload-plugins`, run `/remote-control` again (choose Continue) so cc-hud knows it's on. The desktop app's toolbar row shows the dot too.
+
+### Changed
+
+The terminal crab's moves were redesigned. Each tool now has a start, a loop while it runs, and an ending when the tool really finishes:
+- **Editing a file**: every tap of the claw leaves one ink dot; when the edit is done the page flies up into the blank row and a fresh page takes its place.
+- **Running a command**: the crab types the command, then watches the output scroll; the last line turns green when it finishes, red when it fails. After about 15 seconds on the same command it gets impatient: it taps the desk and stamps its feet while the screen steams.
+- **Searching the web**: a green radar sweeps beside the crab while the query is typed above its head; when results come back, blips light up and the first link appears with how many more.
+- **Fetching a page**: the page flies in from the right and loads line by line, with the URL above; when it's fetched, the page folds away and the URL turns purple.
+- **Sleeping**: after 4 idle minutes the crab dozes off (its eyes close into lines, its head nods); at 5 minutes it digs into the sand, puts on a nightcap and sleeps, peeking with one eye now and then. Anything that happens wakes it at once: it pops out within 0.6 s while the cap flies off.
+- Speech bubbles move to the crab's left while a wide prop (the radar, a fetched page) is on its right.
+- The sunglasses get a small glint, so they don't look like closed eyes.
+
+The desktop app's crab now does the same tool moves in its 16 × 8 picture: the radar with blips, the page that flies in and folds away, the terminal whose last line turns green or red, ink dots and the page flip, steam after about 15 seconds, dozing at 4 minutes, the sandy nap with a nightcap at 5, and popping out when you come back. Its picture redraws only every 15 seconds or so, so these timings are built into the SVG itself. It has no blank row above it for URLs and search terms, and no pointer greeting.
+
 ## 1.3.1 (2026-10-08)
 
 ### Fixed

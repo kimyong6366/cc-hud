@@ -13,7 +13,9 @@ import {
   laneFrames,
   SAY_FRAMES,
   TYPE_FRAMES,
-  TOOL_HOLD_FRAMES,
+  newToolTrack,
+  trackTool,
+  toolAct,
   DEF,
   DIM,
   VALUE,
@@ -24,12 +26,14 @@ import {
   lanePx,
   laneCells,
   bubbleSpot,
+  captionOf,
   tipFit,
   isWide,
   type Lane,
   type LaneAct,
   type Mood,
   type ToolKind,
+  type ToolTrack,
   type Rows,
 } from './sprites'
 
@@ -42,6 +46,10 @@ export type WalkProps = {
   mood: Mood
   pct: number // 上下文 %
   tool: ToolKind | '' // 主会话正在用的工具 ('' = 没有: 在想 / 在回复)
+  toolSeq: number // v1.4: 主会话第几次工具调用 (变了 = 新的一次, 两次之间没空档也认得出)
+  toolEnd: { seq: number; ok: boolean; link?: string; hits?: number } // v1.4: 最近结束的那次调用和成没成功 (收尾: 跑完变绿之类); 搜索还带第一条结果和条数
+  toolArg: string // v1.4: 最近一次工具的主要参数 (抓网页的网址、搜索词), 写在天空行
+  searchWord: string // v1.4: 搜索词前面那个字 (界面语言)
   typeSeq: number // 打字的序号 (变了 = 刚按了键)
   jumpSeq: number // 发出消息的序号
   celebSeq: number // 一轮结束的序号
@@ -63,8 +71,7 @@ type St = {
   saySeq: number
   sayUntil: number // 事件气泡显示到哪一帧
   lastBusyF: number // 最后一次有动静的帧 (5 分钟 = 2000 帧没动静就睡)
-  tool: ToolKind | ''
-  toolUntil: number // 工具刚结束时再撑到哪一帧
+  track: ToolTrack // 这次工具调用的进度 (开始 / 结束 / 成没成功; 结束后再撑 TOOL_HOLD_FRAMES)
   hover: boolean // 指针正停在大螃蟹上
   holdUntil: number // 指针离开后再停到哪一帧
   spot?: { x: number; text: string } // 悬停气泡 (停下那一刻定好的位置和全文)
@@ -86,9 +93,14 @@ function actOf(st: St, p: WalkProps): LaneAct {
     typing: st.f < st.typeUntil,
     celebrating: st.f < st.celebUntil,
     sleeping: st.f - st.lastBusyF > SLEEP_FRAMES,
+    idleF: st.f - st.lastBusyF,
     jumpAge: st.f - st.jumpAt,
     md: p.mood,
-    tool: p.tool || (st.f < st.toolUntil ? st.tool : ''),
+    ...toolAct(st.track, st.f),
+    arg: p.toolArg,
+    word: p.searchWord,
+    ...(p.toolEnd.seq === st.track.seq && p.toolEnd.link ? { link: p.toolEnd.link } : {}),
+    ...(p.toolEnd.seq === st.track.seq && p.toolEnd.hits !== undefined ? { hits: p.toolEnd.hits } : {}),
     hold,
     lookAt: hold ? undefined : st.ptrX,
     pct: p.pct,
@@ -128,8 +140,12 @@ function view(st: St, p: WalkProps): Cell[][] {
     }
   }
   if (L.hidden) write(total - 1, 0, '+' + L.hidden, DIM)
+  // v1.4 天空行的字 (网址 / 搜索词 / 结果链接); 右边摆着大道具时气泡放左边
+  const caps = captionOf(L, a)
+  for (const c of caps) write(0, c.x, c.text, hexOf(c.color) ?? VALUE)
+  const wide = L.pose === 'tool' && (a.tool === 'fetch' || a.tool === 'search')
   if (p.say && st.f < st.sayUntil && !(a.hold && st.spot)) {
-    const s = bubbleSpot(L, p.say.text)
+    const s = bubbleSpot(L, p.say.text, wide)
     if (s) write(top, s.x, s.text, p.say.color)
   }
   if (a.hold && st.spot) write(top, st.spot.x, st.spot.text, VALUE)
@@ -165,8 +181,7 @@ function start(p: WalkProps): St {
     saySeq: p.say?.seq ?? 0,
     sayUntil: -1,
     lastBusyF: -Math.round(p.idleMs / LANE_MS),
-    tool: '',
-    toolUntil: -1,
+    track: newToolTrack(),
     hover: false,
     holdUntil: -1,
     sig: '',
@@ -203,10 +218,7 @@ export default function Walkway(props: WalkProps, surface: any) {
         st.sayUntil = st.f + SAY_FRAMES
       }
       if (p.working || p.agents.length) st.lastBusyF = st.f
-      if (p.tool) {
-        st.tool = p.tool
-        st.toolUntil = st.f + TOOL_HOLD_FRAMES
-      }
+      trackTool(st.track, st.f, p.tool, p.toolSeq, p.toolEnd.seq === p.toolSeq ? p.toolEnd.ok : true)
       if (!st.hover && st.f >= st.holdUntil) st.spot = undefined
       laneFit(st.L, p.w, p.rows, p.sky)
       laneStep(st.L, st.f, st.f * LANE_MS, actOf(st, p), p.agents)
@@ -232,6 +244,7 @@ export default function Walkway(props: WalkProps, surface: any) {
         const hit = e.x >= L.bx && e.x < L.bx + L.cw && e.y >= top && e.y < top + L.rows
         if (hit && !st.hover) {
           st.hover = true
+          st.lastBusyF = st.f // v1.4: 鼠标停上来 = 你在: 睡着的蹦出来, 再过 4 分钟才打瞌睡
           L.pose = 'greet'
           st.spot = bubbleSpot(L, tipFit(p.tip.v, p.tip.tipMin))
         } else if (!hit && st.hover) {

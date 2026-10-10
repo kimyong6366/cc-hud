@@ -15,7 +15,7 @@ export const VALUE = '#d4d4d8'
 export const WARN = '#f87171' // 会用完时 百分比 和 "40m用完" 的颜色
 
 export type Mood = 'chill' | 'normal' | 'sweat' | 'panic'
-export type ToolKind = 'think' | 'read' | 'edit' | 'bash' | 'web' | 'agent' | 'other'
+export type ToolKind = 'think' | 'read' | 'edit' | 'bash' | 'search' | 'fetch' | 'agent' | 'other' // v1.4: 上网拆成 搜索 (WebSearch) / 抓网页 (WebFetch)
 
 // ---------------- 颜色 ----------------
 export const COL = {
@@ -37,6 +37,18 @@ export const COL = {
   shades: 0x09090b, // 墨镜镜片
   bridge: 0x52525b, // 墨镜鼻梁
   alarm: 0xef4444, // 慌张的 "!"
+  termOut: 0xa1a1aa, // 终端里滚动的输出 (v1.4)
+  termOld: 0x71717a, // 终端里上一条命令留下的旧输出 (v1.4)
+  seaHi: 0x93c5fd, // 天空行里的网址 / 结果链接 (v1.4)
+  visited: 0xa78bfa, // 抓完的网址 (访问过的紫色, v1.4)
+  radarRing: 0x15803d, // 搜索的雷达: 绿圈 (v1.4 S2)
+  radarSweep: 0x4ade80, // 扫描线
+  radarTrail: 0x166534, // 扫描线后面的尾巴
+  blip: 0xfafafa, // 光点闪的那一下
+  sand: 0xc8a96a, // 睡觉钻的沙堆 (v1.4)
+  cap: 0x4f46e5, // 睡帽
+  brim: 0xe4e4e7, // 帽檐
+  pom: 0xfafafa, // 绒球
   kid: 0xf2a07b, // 小螃蟹用浅一号的颜色, 和大螃蟹分得开
   kidEye: 0xf5f5f4, // 0.12 的小螃蟹眼睛 (会闪的浅色像素); 0.13 起不画, 留着给测试确认画面里没有它
   kidLeg: 0xa4553d,
@@ -107,21 +119,29 @@ export function encode(px: Px, cols: number, cellRows: number): string {
 
 // eyeDy: 眼睛在身体第几行 (默认 1, 散步道里低头看输入框时 2); legs < 0 = 腾空不画腿
 // v0.19 (散步道的中间姿势): 钳子 mid = 半举 (斜着); 眼睛 half = 眨眼时的半闭; squash = 落地压扁 (矮一行、宽两格, 贴着地)
-export type Arm = 'out' | 'mid' | 'up'
-export type Pose = { bob: number; legs: number; eyes: 'open' | 'half' | 'closed'; look: number; armL: Arm; armR: Arm; body: number; eyeDy?: number; squash?: boolean }
+// v1.4: dn = 往下刨 / 耷拉着 (钻沙、打瞌睡); 眼睛 line = 闭成一字眼 (只用在睡觉和打瞌睡, 平时眨眼还是变暗的那一格); eyeR = 右眼单独 (睡着时睁一只眼)
+export type Arm = 'out' | 'mid' | 'up' | 'dn'
+export type Eyes = 'open' | 'half' | 'closed' | 'line'
+export type Pose = { bob: number; legs: number; eyes: Eyes; eyeR?: Eyes; look: number; armL: Arm; armR: Arm; body: number; eyeDy?: number; squash?: boolean }
 
 // 12x5 像素的螃蟹 (第 6 行留给上下颠); ox = 往右挪几格 (面板里是 0, 散步道里是螃蟹的位置)
 export function drawCrab(p: Px, o: Pose, ox = 0) {
   const y = o.bob
-  const eye = o.eyes === 'open' ? COL.eye : mix(o.body, COL.eye, o.eyes === 'half' ? 0.75 : 0.45)
+  const eyeC = (e: Eyes) => (e === 'open' || e === 'line' ? COL.eye : mix(o.body, COL.eye, e === 'half' ? 0.75 : 0.45))
+  const eye = eyeC(o.eyes)
+  // 一只眼: line = 两格宽的一条线 (左眼往左多一格, 右眼往右多一格)
+  const eyeAt = (x: number, ey: number, e: Eyes, side: -1 | 1) => {
+    if (e === 'line') rect(p, side < 0 ? x - 1 : x, ey, 2, 1, COL.eye)
+    else put(p, x, ey, eyeC(e))
+  }
   if (o.squash) {
     // 落地压扁: 身体矮一行 (第 1-3 行)、左右各宽一格, 钳子平伸贴着身体, 四条腿张开站在地上 (第 4 行)
     rect(p, ox + 1, y + 1, 10, 3, o.body)
     put(p, ox, y + 2, o.body)
     put(p, ox + 11, y + 2, o.body)
     for (const x of [1, 4, 7, 10]) put(p, ox + x, y + 4, o.body)
-    put(p, ox + 4 + o.look, y + 2, eye)
-    put(p, ox + 7 + o.look, y + 2, eye)
+    eyeAt(ox + 4 + o.look, y + 2, o.eyes, -1)
+    eyeAt(ox + 7 + o.look, y + 2, o.eyeR ?? o.eyes, 1)
     return
   }
   rect(p, ox + 2, y, 8, 4, o.body)
@@ -130,11 +150,17 @@ export function drawCrab(p: Px, o: Pose, ox = 0) {
   else if (o.armL === 'mid') {
     put(p, ox + 1, y + 2, o.body)
     put(p, ox, y + 1, o.body)
+  } else if (o.armL === 'dn') {
+    put(p, ox + 1, y + 3, o.body)
+    put(p, ox, y + 4, o.body)
   } else rect(p, ox, y, 1, 2, o.body)
   if (o.armR === 'out') rect(p, ox + 10, y + 2, 2, 1, o.body)
   else if (o.armR === 'mid') {
     put(p, ox + 10, y + 2, o.body)
     put(p, ox + 11, y + 1, o.body)
+  } else if (o.armR === 'dn') {
+    put(p, ox + 10, y + 3, o.body)
+    put(p, ox + 11, y + 4, o.body)
   } else rect(p, ox + 11, y, 1, 2, o.body)
   // 走路: 四条腿两两交替抬起
   if (o.legs >= 0) {
@@ -142,8 +168,8 @@ export function drawCrab(p: Px, o: Pose, ox = 0) {
     for (const x of legs) put(p, ox + x, y + 4, o.body)
   }
   const ey = y + (o.eyeDy ?? 1)
-  put(p, ox + 4 + o.look, ey, eye)
-  put(p, ox + 7 + o.look, ey, eye)
+  eyeAt(ox + 4 + o.look, ey, o.eyes, -1)
+  eyeAt(ox + 7 + o.look, ey, o.eyeR ?? o.eyes, 1)
 }
 
 // look / low / hop: 散步道用 (面板不给, 画法和以前一样):
@@ -163,7 +189,18 @@ export type Scene = {
   sub?: number // 散步道的帧号 (75ms): 有它时眨眼加半闭、敲钳子 / 挥手加半举、睡觉呼吸放慢
   bodyMix?: number // 身体颜色 0 = 平常色 .. 1 = 红: 有它时代替 bodyColor 的硬切换 (渐渐变红 / 呼吸式闪)
   arms?: { L?: Arm; R?: Arm } // 最后盖上去的钳子姿势 (悬停打招呼收回时的半举)
+  // v1.4 散步道给的: 这次工具调用开始了几帧 / 结束了几帧 (-1 = 还在跑) / 成没成功; 不给就按帧号循环 (面板、旧测试)
+  toolAge?: number
+  endAge?: number
+  ok?: boolean
+  sky?: boolean // v1.4: 上面有天空行 (改文件翻页飞进去; 没有就让旧页直接消失)
+  room?: number // v1.4: 道具区右边还有几格空地 (抓网页的页面从这里飞进来; 不够就不飞)
+  hits?: number // v1.4: 搜到几条 (雷达亮几个光点)
+  nap?: Nap // v1.4: 睡觉组合的哪个阶段 (散步道给; 有它时整只按这个画)
 }
+// v1.4 睡觉组合 (定稿 G + H + I): 打瞌睡 -> 钻沙 -> 睡帽掉下来 -> 戴着睡帽睡 -> 一来活蹦出来; s = 这个阶段的第几帧 (75ms)
+export type Nap = { stage: 'doze' | 'burrow' | 'cap' | 'sleep' | 'wake'; s: number; from?: WakeFrom }
+export type WakeFrom = 'doze' | 'burrow' | 'cap'
 
 export function bodyColor(pct: number, f: number): number {
   if (pct >= 95) return f % 4 < 2 ? COL.hot : COL.body
@@ -186,8 +223,54 @@ const ARM_TAP: Arm[] = ['out', 'mid', 'up', 'mid']
 const WAVE_ARM: Arm[] = ['mid', 'up', 'up', 'up', 'up', 'mid', 'out', 'out', 'out', 'out', 'out', 'out']
 const BREATH = 27
 
-export function scenePx(s: Scene, f: number): Px {
+// 改文件 B 的进度 (75ms 一帧): 写到第几点 n (纸上一共 10 点, 按 PAGE_LINES 一行行写), 敲到第几拍 tap (-1 = 不敲),
+//   翻页到第几帧 flip (-1 = 没在翻). 跑着的时候 54 帧一轮 (写 40 帧, 写满停 8 帧, 翻 6 帧);
+//   一结束就翻页 (没写满也翻: 改完一次就收起一页), 翻页那 6 帧落在结束后的收尾里
+export const PAGE_LINES = [3, 2, 3, 2]
+export function editPhase(age: number, endAge: number): { n: number; tap: number; flip: number } {
+  const at = (c: number) => (c < 40 ? (c >> 2) + 1 : 10)
+  if (endAge >= 0) return { n: at((age - endAge) % 54), tap: -1, flip: endAge } // 第 6 帧起旧页整张飞出天空行
+  const c = age % 54
+  if (c < 40) return { n: at(c), tap: c % 4, flip: -1 }
+  return { n: 10, tap: -1, flip: c < 48 ? -1 : c - 48 }
+}
+function inkPage(put1: (x: number, y: number, c: number) => void, y0: number, n: number, newBlue: boolean) {
+  for (let y = 0; y < 4; y++) for (let x = 0; x < 3; x++) put1(12 + x, y0 + y, COL.paper)
+  let i = 0
+  PAGE_LINES.forEach((len, r) => {
+    for (let x = 0; x < len; x++, i++) if (i < n) put1(12 + x, y0 + r, newBlue && i === n - 1 ? COL.scan : COL.ink)
+  })
+}
+
+// 终端屏幕里的一行输出: 长 1-3 格 (按行号算, 同一行每次都一样长)
+const hashK = (k: number) => ((k * 2654435761) >>> 0) % 1000
+function outLine(p: Px, y: number, k: number, c: number) {
+  const n = 1 + (hashK(k) % 3)
+  for (let x = 0; x < n; x++) put(p, 12 + x, y, c)
+}
+
+// over: 画布外面 (天空行 y < 0、15 列以外) 的像素放这里, 散步道再画上去 (v1.4: 改文件翻页、抓网页的页面);
+//   第 4 个数是 1 时, x 按半格算 (雷达)
+export type Over = Array<[number, number, number, number?]>
+// 雷达的圈 (5 行, 每行从第几个半格到第几个半格) 和光点的位置 (相对圈的左上角)
+const RADAR: Array<[number, number]> = [
+  [3, 6],
+  [1, 8],
+  [0, 9],
+  [1, 8],
+  [3, 6],
+]
+const BLIPS: Array<[number, number]> = [
+  [2, 1],
+  [7, 1],
+  [3, 3],
+  [6, 3],
+  [8, 2],
+]
+export function scenePx(s: Scene, f: number, over?: Over): Px {
   const p = canvas(SPRITE_W, 6)
+  // 画布外面 (天空行 y < 0, 或 15 列以外) 的像素交给散步道去画
+  const putO = (x: number, y: number, c: number) => (y < 0 || x >= SPRITE_W ? over?.push([x, y, c]) : put(p, x, y, c))
   const t = Math.floor(f / 2)
   const md = s.mood ?? 'normal'
   // 0.14 起子代理小螃蟹搬到输入框上方的散步道, 面板右侧 3 列永远给道具
@@ -197,6 +280,10 @@ export function scenePx(s: Scene, f: number): Px {
   let shades = false
   let bigBang = false // 右侧的大 "!"
 
+  if (s.nap) {
+    drawNap(p, o, s.nap, sub ?? f, over)
+    return p
+  }
   if (s.hop !== undefined && s.hop >= 0 && s.hop < JUMP_FRAMES) {
     // 散步道: 发出消息那一跳 (画布只有 6 像素高, 没法整只往上移): 蹲 -> 腾空 (不画腿) -> 落地
     o.bob = s.hop === 0 || s.hop >= JUMP_FRAMES - 1 ? 1 : 0
@@ -237,36 +324,117 @@ export function scenePx(s: Scene, f: number): Px {
         break
       }
       case 'edit': {
+        // v1.4 (定稿 B, 一笔一画): 右钳 平伸 -> 半举 -> 举起 -> 半举 敲一下, 落下那一帧纸上多一个墨点 (先蓝 2 帧像光标);
+        //   翻页: 写过的那页每帧往上飞 1 像素进天空行, 第 2 帧起下面换上白纸, 右钳 举起 -> 半举 -> 平伸 (扬灰在 laneBursts)
+        const F = sub ?? f
+        const ph = editPhase(s.toolAge ?? F % 54, s.endAge ?? -1)
+        o.bob = 0
+        o.legs = 0
         o.look = 1
-        // 右钳一起一落; 散步道里经过半举 (平伸 -> 半举 -> 举起 -> 半举, 每 75ms 一格, 节奏和以前一样)
-        o.armR = sub !== undefined ? (ARM_TAP[sub % 4] ?? 'out') : f % 2 ? 'up' : 'out'
-        if (zoneFree) {
-          rect(p, 12, 1, 3, 4, COL.paper)
-          const k = t % 13
-          for (let i = 0; i < k; i++) put(p, 12 + (i % 3), 1 + Math.floor(i / 3), COL.ink)
+        if (ph.flip < 0) {
+          o.armR = ph.tap >= 0 ? (ARM_TAP[ph.tap] ?? 'out') : 'out'
+          inkPage((x, y, c) => put(p, x, y, c), 1, ph.n, ph.tap >= 0 && ph.tap < 2)
+        } else {
+          o.armR = ph.flip < 2 ? 'up' : ph.flip < 4 ? 'mid' : 'out'
+          if (ph.flip >= 2) rect(p, 12, 1, 3, 4, COL.paper)
+          if (s.sky !== false) inkPage(putO, -ph.flip, ph.n, false) // 没有天空行: 旧页直接消失
         }
         break
       }
       case 'bash': {
-        // 双钳交替敲键盘; 散步道里两只都经过半举
-        o.armL = sub !== undefined ? (ARM_TAP[(sub + 2) % 4] ?? 'out') : f % 2 ? 'up' : 'out'
-        o.armR = sub !== undefined ? (ARM_TAP[sub % 4] ?? 'out') : f % 2 ? 'out' : 'up'
-        if (zoneFree) {
-          rect(p, 12, 1, 3, 4, COL.term)
-          put(p, 12, 2, COL.cursor)
-          if (f % 4 < 2) put(p, 13, 4, COL.cursor)
+        // v1.4 (定稿 B): 敲命令 (开头 18 帧: 双钳交替敲, 最下面一行提示符后面打出两个字, 上面是上一条命令的旧输出)
+        //   -> 盯着输出 (钳子放下, 灰色的输出每 3 帧往上滚一行) -> 跑完最后一行整行变绿 (报错变红), 在收尾那段里一直亮着
+        //   帧按 75ms 算 (散步道的 sub); 身体不晃, 眼睛看屏幕. 太快的命令敲到一半就结束: 直接到跑完那一下
+        const F = sub ?? f
+        const age = s.toolAge ?? F % 72
+        const ended = s.endAge !== undefined && s.endAge >= 0
+        const ran = ended ? age - (s.endAge ?? 0) : age // 跑了多久才结束 (滚到哪一行就停在哪一行)
+        o.bob = 0
+        o.legs = 0
+        o.look = 1
+        rect(p, 12, 1, 3, 4, COL.term)
+        if (!ended && age >= BASH_IMPATIENT) {
+          // 跑命令 C (等得不耐烦, 64 帧一轮): 前半右钳每 2 帧敲一下桌面, 后半跺脚 (腿每 4 帧换), 中间眨一次眼;
+          //   眼睛一直盯着屏幕 (用户 2026-10-10: 不回头看你, 看你留给等批准); 屏幕最下面一个进度点来回跳; 热气在 emitParticles
+          const c = (age - BASH_IMPATIENT) % 64
+          if (c < 32) o.armR = (F >> 1) % 2 ? 'mid' : 'out'
+          else {
+            o.legs = (F >> 2) % 2 ? 3 : 0
+            if (c === 40) o.eyes = 'closed'
+            else if (c === 39 || c === 41) o.eyes = 'half'
+          }
+          outLine(p, 1, 7, COL.termOut)
+          put(p, 12 + ([0, 1, 2, 1][(F >> 1) % 4] ?? 0), 4, COL.cursor)
+        } else if (!ended && age < 18) {
+          o.armL = ARM_TAP[(F + 2) % 4] ?? 'out'
+          o.armR = ARM_TAP[F % 4] ?? 'out'
+          for (let r = 0; r < 3; r++) outLine(p, 1 + r, 100 + r, COL.termOld)
+          put(p, 12, 4, COL.cursor)
+          const n = Math.min(2, Math.floor(age / 6))
+          for (let x = 0; x < n; x++) put(p, 13 + x, 4, COL.paper)
+          if (n < 2 && F % 4 < 2) put(p, 13 + n, 4, COL.cursor)
+        } else {
+          const k = Math.floor((Math.max(18, ran) - 18) / 3)
+          for (let r = 0; r < 4; r++) {
+            if (ended && r === 3) rect(p, 12, 4, 3, 1, s.ok === false ? COL.alarm : COL.cursor) // 报错变红 (用户 2026-10-10 选的)
+            else outLine(p, 1 + r, k - 3 + r, COL.termOut)
+          }
         }
         break
       }
-      case 'web': {
+      case 'fetch': {
+        // v1.4 (定稿 D+): 带蓝条的网页从右边飞进来 (每帧 2 格), 第 5-7 帧右钳举起接住; 内容一行行加载 (第 12/18/24 帧),
+        //   正在加载的那行开头蓝点闪; 抓完 (工具结束) 网页收窄 3 -> 2 -> 1 -> 没了, 亮光在 laneBursts; 网址写在天空行 (captionOf)
+        //   右边空地不够 11 格: 不飞, 直接出现在道具区
+        const F = sub ?? f
+        const age = s.toolAge ?? F % 48
+        const end = s.endAge ?? -1
+        const ran = end >= 0 ? age - end : age
+        o.bob = 0
+        o.legs = 0
         o.look = 1
-        if (zoneFree) {
-          const ring = [[13, 1], [14, 2], [13, 3], [12, 2]]
-          for (const [x, y] of ring) put(p, x, y, COL.sea)
-          put(p, 13, 2, COL.sea)
-          const [lx, ly] = ring[t % 4]
-          put(p, lx, ly, COL.land)
+        if (end < 0 && ran >= 5 && ran < 8) o.armR = 'up'
+        const x0 = (s.room ?? 99) >= 11 ? Math.max(12, 23 - 2 * Math.min(ran, 6)) : 12
+        const w = end < 0 ? 3 : end < 2 ? 2 : end < 4 ? 1 : 0
+        for (let y = 1; y <= 4; y++) for (let x = 0; x < w; x++) putO(x0 + x, y, y === 1 ? COL.sea : COL.paper)
+        if (end < 0 && ran >= 6) {
+          const loaded = ran < 12 ? 0 : ran < 18 ? 1 : ran < 24 ? 2 : 3
+          for (let r = 0; r < loaded; r++) for (let x = 0; x < ([3, 2, 3][r] ?? 0); x++) put(p, 12 + x, 2 + r, COL.ink)
+          if (loaded < 3 && F % 4 < 2) put(p, 12, 2 + loaded, COL.scan)
         }
+        break
+      }
+      case 'search': {
+        // v1.4 (S2 雷达, 用户 2026-10-10 选的): 道具区起一个 5 行的绿圈 (只画圈, 半格精度, 第 26-35 个半格),
+        //   扫描线 16 帧转一圈, 后面拖一条暗一点的尾巴; 搜到了 (结束、成功、有结果) 亮起光点 (一条一个, 最多 5 个), 右钳举起;
+        //   搜索词 / 结果链接写在天空行 (captionOf)
+        const F = sub ?? f
+        const end = s.endAge ?? -1
+        o.bob = 0
+        o.legs = 0
+        o.look = 1
+        const found = end >= 0 && s.ok !== false && (s.hits ?? 0) > 0
+        if (found && end < 8) o.armR = 'up'
+        const H = (hx: number, y: number, c: number) => over?.push([hx, y, c, 1])
+        const hx0 = 26
+        const cx = hx0 + 4.5
+        RADAR.forEach(([a0, b0], i) => {
+          for (let k = a0; k <= b0; k++) if (i === 0 || i === 4 || k === a0 || k === b0) H(hx0 + k, i, COL.radarRing)
+        })
+        const ray = (th: number, c: number) => {
+          for (let r = 0.6; r <= 2.2; r += 0.4) {
+            const hx = Math.round(cx + 2 * r * Math.cos(th))
+            const y = Math.round(2 + r * Math.sin(th))
+            const row = RADAR[y]
+            if (row && hx - hx0 > row[0] && hx - hx0 < row[1]) H(hx, y, c)
+          }
+        }
+        const th = (F * Math.PI) / 8
+        ray(th - 0.5, COL.radarTrail)
+        ray(th, COL.radarSweep)
+        H(hx0 + 4, 2, COL.radarSweep)
+        H(hx0 + 5, 2, COL.radarSweep)
+        if (found) BLIPS.slice(0, Math.min(5, s.hits ?? 0)).forEach(([k, y], i) => H(hx0 + k, y, (F >> 1) % 3 === i % 3 ? COL.blip : COL.spark))
         break
       }
       case 'agent':
@@ -325,6 +493,7 @@ export function scenePx(s: Scene, f: number): Px {
     rect(p, 3, y, 2, 1, COL.shades)
     rect(p, 5, y, 2, 1, COL.bridge)
     rect(p, 7, y, 2, 1, COL.shades)
+    over?.push([2 * 8 + 1, y, COL.blip, 1]) // v1.4: 右镜片上一点白色反光 (半格), 和睡觉的一字眼分得开
   }
   if (bigBang) {
     const c = f % 4 < 2 ? COL.alarm : COL.spark
@@ -338,6 +507,154 @@ export function scenePx(s: Scene, f: number): Px {
     const d = t % 4
     if (d < 2) put(p, 1, d, COL.sweat)
   }
+  return p
+}
+
+// ---------------- v1.4 睡觉组合 ----------------
+export const DOZE_FRAMES = laneFrames(4 * 60_000) // 闲 4 分钟打瞌睡
+export const SLEEP_LANE = laneFrames(5 * 60_000) // 闲 5 分钟钻沙 (原来的睡觉门槛)
+const BURROW = 24 // 钻沙几帧
+const CAP_DROP = 8 // 睡帽掉下来几帧
+export const WAKE_DEEP = 8 // 从沙里蹦出来几帧 (0.6 秒)
+export const WAKE_DOZE = 3 // 打瞌睡被叫醒几帧
+const PEEK = 300 // 睡着以后每隔这么多帧睁一只眼看看 (第 100-111 帧)
+// 闲了 idle 帧: 处在睡觉的哪个阶段 (还没到 4 分钟 = undefined)
+export function napOf(idle: number): Nap | undefined {
+  if (idle < DOZE_FRAMES) return undefined
+  if (idle < SLEEP_LANE) return { stage: 'doze', s: (idle - DOZE_FRAMES) % 80 }
+  const i = idle - SLEEP_LANE
+  if (i < BURROW) return { stage: 'burrow', s: i }
+  if (i < BURROW + CAP_DROP) return { stage: 'cap', s: i - BURROW }
+  return { stage: 'sleep', s: i - BURROW - CAP_DROP }
+}
+function sandHeap(p: Px, side: boolean) {
+  rect(p, 0, 5, 12, 1, COL.sand)
+  if (side) {
+    rect(p, 0, 4, 2, 1, COL.sand)
+    rect(p, 10, 4, 2, 1, COL.sand)
+    put(p, 0, 3, COL.sand)
+    put(p, 11, 3, COL.sand)
+  }
+}
+// 睡帽 (帽檐在 y 那一行, 帽身往上两行, 帽尖朝右, 绒球随呼吸上下晃); 超出画布的交给散步道
+export function nightcap(put1: (x: number, y: number, c: number) => void, y: number, pomDown: boolean, dx = 0, dy = 0) {
+  for (let x = 3; x <= 8; x++) put1(x + dx, y + dy, COL.brim)
+  for (let x = 4; x <= 8; x++) put1(x + dx, y - 1 + dy, COL.cap)
+  for (let x = 5; x <= 7; x++) put1(x + dx, y - 2 + dy, COL.cap)
+  put1(9 + dx, y - 1 + dy, COL.cap)
+  put1(10 + dx, y - (pomDown ? 0 : 1) + dy, COL.pom)
+}
+function drawNap(p: Px, o: Pose, n: Nap, F: number, over?: Over) {
+  const putO = (x: number, y: number, c: number) => (y < 0 || x >= SPRITE_W ? over?.push([x, y, c]) : put(p, x, y, c))
+  const k = n.s
+  o.legs = 0
+  o.look = 0
+  o.bob = 0
+  if (n.stage === 'doze') {
+    // 打瞌睡 (80 帧一轮): 眼皮慢慢合上, 头往下一点、钳子耷拉, 猛地醒一下左右看看, 再点一次头, 然后半睁着
+    const droop = () => {
+      o.bob = 1
+      o.armL = 'dn'
+      o.armR = 'dn'
+    }
+    if (k < 8) {
+      // 醒着
+    } else if (k < 12) o.eyes = 'half'
+    else if (k < 24) {
+      o.eyes = 'line'
+      if (k >= 15) droop()
+    } else if (k < 30) {
+      if (k < 26) {
+        o.armL = 'mid'
+        o.armR = 'mid'
+      }
+      o.look = (k >> 1) % 2 ? -1 : 1
+    } else if (k < 34) o.eyes = 'half'
+    else if (k < 46) {
+      o.eyes = 'line'
+      if (k >= 37) droop()
+    } else o.eyes = 'half'
+    drawCrab(p, o)
+    return
+  }
+  if (n.stage === 'burrow') {
+    // 睁着眼边刨边往沙里沉 (每 6 帧沉 1 像素), 前 18 帧两钳交替刨; 钻好了才闭成一字眼
+    const digging = k < 18
+    const ph = (F >> 1) % 2
+    o.bob = Math.min(3, Math.floor(k / 6))
+    o.eyes = k < 12 ? 'open' : k < 20 ? 'half' : 'line'
+    o.armL = digging ? (ph ? 'dn' : 'out') : 'out'
+    o.armR = digging ? (ph ? 'out' : 'dn') : 'out'
+    drawCrab(p, o)
+    sandHeap(p, k >= 8)
+    return
+  }
+  if (n.stage === 'cap') {
+    // 眼睛已经闭成一字眼, 睡帽从上面掉下来戴上
+    o.bob = 3
+    o.eyes = 'line'
+    drawCrab(p, o)
+    sandHeap(p, true)
+    nightcap(putO, 3, false, 0, Math.min(0, k - 5))
+    return
+  }
+  if (n.stage === 'sleep') {
+    // 戴着睡帽睡: 每 27 帧一浮一沉 (睡帽跟着), 冒泡泡; 隔一阵睁一只眼看看你回来没
+    const breathe = Math.floor(k / 27) % 2
+    const q = k % PEEK
+    const peek = q >= 100 && q < 112
+    o.bob = breathe ? 2 : 3
+    o.eyes = 'line'
+    if (peek) {
+      o.look = (q >> 2) % 2 ? 1 : 0
+      o.eyeR = q < 102 || q >= 110 ? 'half' : 'open'
+    }
+    drawCrab(p, o)
+    nightcap(putO, o.bob, breathe === 1)
+    sandHeap(p, true)
+    const z = Math.floor((F >> 1) / 3)
+    put(p, 13, 5 - (z % 6), COL.bubble)
+    put(p, 14, 5 - ((z + 3) % 6), COL.bubble)
+    return
+  }
+  // 醒来 (wake). 从打瞌睡: 睁眼、两钳一举 (3 帧). 从沙里: 第 0 帧睁眼、沙子一抖; 1-4 帧蹦进天空行 (钳子举起、腿收起, 抬高在 drawLaneBig);
+  //   第 5 帧落地压扁; 6-7 帧两钳半举左右看. 睡帽弹飞、沙子炸开、地上的沙在散步道那层接着播
+  if (n.from === 'doze') {
+    o.armL = 'up'
+    o.armR = 'up'
+    drawCrab(p, o)
+    return
+  }
+  if (k === 0) {
+    o.bob = 3
+    drawCrab(p, o)
+    if (n.from === 'cap') nightcap(putO, 3, false)
+    sandHeap(p, true)
+    put(p, 10, 3, COL.sand)
+    return
+  }
+  if (k <= 4) {
+    o.legs = -1
+    o.armL = 'up'
+    o.armR = 'up'
+    drawCrab(p, o)
+    return
+  }
+  if (k === 5) {
+    drawCrab(p, { ...o, squash: true })
+    return
+  }
+  o.armL = 'mid'
+  o.armR = 'mid'
+  o.look = (k >> 1) % 2 ? -1 : 1
+  drawCrab(p, o)
+}
+
+// 测试 / 预览用: scenePx 再把画布外那层里落在 15x6 画布内的像素画上 (雷达左半边就在道具区里)
+export function scenePxAll(s: Scene, f: number): Px {
+  const over: Over = []
+  const p = scenePx(s, f, over)
+  for (const [x, y, c, half] of over) put(p, half ? x >> 1 : x, y, c)
   return p
 }
 
@@ -392,6 +709,7 @@ const LANE_ROAM = 6 // 小螃蟹再多也给整队留几格走动的地方
 export const SAY_FRAMES = laneFrames(4950) // 气泡显示多久 (约 5 秒)
 const WAVE_MS = 1500 // 子代理结束后挥手多久
 export const TYPE_FRAMES = laneFrames(1500) // 最后一次按键后多久恢复 (约 1.5 秒)
+export const BASH_IMPATIENT = laneFrames(15_000) // v1.4 跑命令 C: 同一条命令跑了这么久, 螃蟹等得不耐烦
 // 忙的时候每几帧走半格 (75ms 一帧, 半格一步: 和以前 "150ms 一帧, 一格一步" 一样快: 悠闲每格 750ms ... 慌张每格 150ms)
 const MOOD_STEP: Record<Mood, number> = { chill: 5, normal: 3, sweat: 2, panic: 1 }
 const STROLL_STEP = 3 // 溜达时每几帧走半格
@@ -440,7 +758,7 @@ export type LaneKid = { id: string; hx: number; x: number; y: number; state: 'wa
 // sky = 能不能进天空行 (只有往上飘的: 庆祝闪光 / 睡觉泡泡 / 思考点点)
 export type Particle = { x: number; y: number; vx: -1 | 0 | 1; vy: -1 | 0 | 1; age: number; life: number; color: number; sky: boolean; every: 1 | 2 }
 // greet = 鼠标停在大螃蟹上 (v0.16): 停下举钳打招呼, 队伍也停
-export type LanePose = 'greet' | 'celebrate' | 'jump' | 'type' | 'tool' | 'walk' | 'sleep' | 'idle'
+export type LanePose = 'greet' | 'celebrate' | 'jump' | 'type' | 'tool' | 'walk' | 'sleep' | 'doze' | 'wake' | 'idle'
 export type Lane = {
   w: number // 宽度 (格)
   rows: Rows // 螃蟹区几行 (不含天空行)
@@ -470,15 +788,63 @@ export type Lane = {
   greetAt: number // 打招呼从哪一帧开始 (钳子先半举)
   greetEnd: number // 打招呼在哪一帧结束 (钳子先回到半举)
   celebStart: number // 庆祝从哪一帧开始 (连跳两下)
+  // v1.4 睡觉组合:
+  napping: WakeFrom | '' // 上一帧在睡的哪个阶段 ('' = 醒着; 一醒就蹦出来)
+  waking: number // 蹦出来还剩几帧
+  wakeAt: number // 从哪一帧醒的
+  wakeFrom: WakeFrom | '' // 从哪个阶段醒的
 }
 // 这一帧的处境: 散步道的时钟和渲染用同一份; tool = 主会话正在用的工具种类 ('' = 没有, 在想 / 在回复)
 // hold = 鼠标停在大螃蟹上 (或刚离开 0.5 秒内); lookAt = 指针在横栏别处时的列 (闲着时眼睛看过去), 没有就 undefined
 // pct = 上下文 % (身体颜色渐变要按帧算, 所以随处境一起给)
-export type LaneAct = { working: boolean; agents: number; typing: boolean; celebrating: boolean; sleeping: boolean; jumpAge: number; md: Mood; tool: ToolKind | ''; hold: boolean; lookAt?: number; pct?: number }
+export type LaneAct = {
+  working: boolean
+  agents: number
+  typing: boolean
+  celebrating: boolean
+  sleeping: boolean
+  jumpAge: number
+  md: Mood
+  tool: ToolKind | ''
+  hold: boolean
+  lookAt?: number
+  pct?: number
+  toolAge?: number
+  endAge?: number
+  ok?: boolean
+  arg?: string // v1.4: 这次工具的主要参数 (抓网页的网址、搜索词), 写在天空行
+  link?: string // v1.4: 搜索结束时的第一条结果网址
+  hits?: number // v1.4: 搜到几条
+  word?: string // v1.4: 搜索词前面那个字 (界面语言: 搜 / search)
+  idleF?: number // v1.4: 多少帧没有动静了 (4 分钟打瞌睡, 5 分钟钻沙)
+}
+
+// v1.4: 一次工具调用的进度 (散步道 Client 和 previewLane 共用). seq 变了 = 新的一次调用 (两次之间没有空档也认得出);
+//   工具名变成 '' = 结束了 (带上成没成功); 结束后再撑 TOOL_HOLD_FRAMES, 收尾的动作在这段里演
+export type ToolTrack = { kind: ToolKind | ''; seq: number; startF: number; endF: number; ok: boolean }
+export const newToolTrack = (): ToolTrack => ({ kind: '', seq: 0, startF: -999, endF: -1, ok: true })
+// 结束后再撑多久: 搜索的「找到了」要看得清链接 (约 1.8 秒), 抓网页的紫色网址约 0.9 秒, 其余 0.6 秒; 下一个工具来了马上换
+const endHold = (k: ToolKind | '') => (k === 'search' ? laneFrames(1800) : k === 'fetch' ? laneFrames(900) : TOOL_HOLD_FRAMES)
+export function trackTool(T: ToolTrack, f: number, kind: ToolKind | '', seq: number, ok: boolean) {
+  if (kind) {
+    if (!T.kind || T.endF >= 0 || seq !== T.seq) {
+      T.startF = f
+      T.endF = -1
+      T.ok = true
+    }
+    T.kind = kind
+    T.seq = seq
+  } else if (T.kind && T.endF < 0) {
+    T.endF = f
+    T.ok = ok
+  }
+  if (T.kind && T.endF >= 0 && f - T.endF >= endHold(T.kind)) T.kind = ''
+}
+export const toolAct = (T: ToolTrack, f: number) => ({ tool: T.kind, toolAge: f - T.startF, endAge: T.endF < 0 ? -1 : f - T.endF, ok: T.ok })
 export function newLane(w: number, rows: Rows = 3, sky = false): Lane {
   const { bw, cw, kw } = LANE_SIZE[rows]
   const bx = Math.max(0, Math.floor((w - bw) / 2))
-  return { w, rows, sky, bw, cw, kw, hx: bx * 2, bx, dir: 1, stepAt: 0, steps: 0, kids: [], gone: [], hidden: 0, pt: [], strollLeft: 0, strollAt: -1, lookUntil: -1, celebAt: -1, pose: 'idle', heat: -1, runSteps: 2, turnUntil: -1, inGreet: false, greetAt: -999, greetEnd: -999, celebStart: -999 }
+  return { w, rows, sky, bw, cw, kw, hx: bx * 2, bx, dir: 1, stepAt: 0, steps: 0, kids: [], gone: [], hidden: 0, pt: [], strollLeft: 0, strollAt: -1, lookUntil: -1, celebAt: -1, pose: 'idle', heat: -1, runSteps: 2, turnUntil: -1, inGreet: false, greetAt: -999, greetEnd: -999, celebStart: -999, napping: '', waking: 0, wakeAt: -999, wakeFrom: '' }
 }
 export const laneCap = (L: Lane) => Math.max(0, Math.floor((L.w - LANE_L - L.bw - LANE_ROAM) / (L.kw + 1)))
 const sgn = (n: number): -1 | 0 | 1 => (n > 0 ? 1 : n < 0 ? -1 : 0)
@@ -569,13 +935,19 @@ export function laneSync(L: Lane, now: number, running: string[]): boolean {
 
 // 这一帧大螃蟹是什么姿势: 庆祝 > 跳 > 打字低头 > 用工具 (停下做动作) > 走 (在想 / 在回复 / 子代理在跑 / 溜达) > 睡 > 趴着
 export function lanePose(L: Lane, a: LaneAct): LanePose {
+  if (L.waking > 0) return 'wake' // v1.4: 刚醒: 先蹦出来 (0.6 秒内), 再做接下来的事
+  return poseNow(L, a)
+}
+function poseNow(L: Lane, a: LaneAct): LanePose {
   if (a.hold) return 'greet'
   if (a.celebrating) return 'celebrate'
   if (a.jumpAge >= 0 && a.jumpAge < JUMP_LANE) return 'jump'
   if (a.typing) return 'type'
   if (a.tool) return 'tool'
   if (a.working || a.agents > 0 || L.strollLeft > 0) return 'walk'
-  if (a.sleeping) return 'sleep'
+  // v1.4: 慌张时不睡 (原来就是: 慌张会把睡着的叫醒); 闲 5 分钟钻沙睡, 4 分钟打瞌睡
+  if (a.md !== 'panic' && a.sleeping) return 'sleep'
+  if (a.md !== 'panic' && (a.idleF ?? 0) >= DOZE_FRAMES && L.rows === 3) return 'doze'
   return 'idle'
 }
 
@@ -640,10 +1012,17 @@ function emitParticles(L: Lane, t: number, a: LaneAct, pose: LanePose) {
       addPt(L, x, y, (k >> 1) % 2 ? (onRight ? 1 : -1) : 0, -1, 5 + (rnd(t, 10 + i) % 3), mix(COL.spark, PT_DARK, 0.25), true, k % 3 === 0 ? 2 : 1)
     }
   } else L.celebAt = -1
+  // v1.4 钻沙: 刨的时候每 150ms 往右上方扬一粒沙
+  const nap = pose === 'sleep' ? napOf(a.idleF ?? 0) : undefined
+  if (nap?.stage === 'burrow' && nap.s < 18 && L.rows === 3) addPt(L, L.hx + 25, 8, 1, -1, 5, COL.sand, true)
   // 睡着: 头边慢慢冒泡泡 (每 12 个 150ms 一个), 往上飘进天空行
   if (pose === 'sleep' && t % 12 === 0) {
     const x = L.hx + 2 * L.bw < 2 * L.w ? L.hx + 2 * L.bw : L.hx - 1
     addPt(L, x, Math.min(H - 1, 5), 0, -1, 5, mix(COL.bubble, PT_DARK, 0.3), true)
+  }
+  // v1.4 跑命令 C (同一条命令跑了 15 秒以上): 屏幕上方冒热气, 每 3 个 150ms 一缕, 往上飘 4 步, 越高越暗
+  if (pose === 'tool' && a.tool === 'bash' && (a.endAge ?? -1) < 0 && (a.toolAge ?? 0) >= BASH_IMPATIENT && L.sky && L.rows === 3 && t % 3 === 0) {
+    addPt(L, L.hx + 2 * (12 + (Math.floor(t / 3) % 3)), -1, 0, -1, 4, COL.termOut, true)
   }
   // 在想 / 在回复 (主会话在跑但没有工具): 头顶冒思考点点, 往上飘进天空行 (没有天空行就不冒, 头顶就是格子边)
   if (pose === 'walk' && a.working && !a.tool && L.sky && t % 5 === 0) {
@@ -654,6 +1033,16 @@ function emitParticles(L: Lane, t: number, a: LaneAct, pose: LanePose) {
 
 // 一次性的粒子, 在发生的那一帧冒 (哪一帧都可能): 发出消息那一跳落地 / 小螃蟹离场
 function laneBursts(L: Lane, a: LaneAct, pose: LanePose, exits: LaneKid[]) {
+  // v1.4 抓网页收完 (结束后第 4 帧): 两点亮光往上飘进天空行
+  if (pose === 'tool' && a.tool === 'fetch' && L.sky && L.rows === 3 && a.endAge === 4) {
+    addPt(L, L.hx + 25, -1, 0, -1, 4, COL.spark, true)
+    addPt(L, L.hx + 27, -2, 0, -1, 4, COL.spark, true)
+  }
+  // v1.4 改文件翻页的第 3 帧: 天空行里扬起两点灰
+  if (pose === 'tool' && a.tool === 'edit' && L.sky && L.rows === 3 && editPhase(a.toolAge ?? 0, a.endAge ?? -1).flip === 3) {
+    addPt(L, L.hx + 22, -2, 0, -1, 3, COL.termOut, true)
+    addPt(L, L.hx + 31, -1, 0, -1, 3, COL.termOut, true)
+  }
   // 落地 (压扁的那一帧): 两只脚边冒 5 粒, 往两边散
   if (pose === 'jump' && a.jumpAge === JUMP_LAND) {
     const H = L.rows * 4
@@ -730,7 +1119,7 @@ export function laneStep(L: Lane, f: number, now: number, a: LaneAct, running: s
   L.gone = L.gone.filter(k => !exits.includes(k))
   // 溜达的排程: 只在全闲时 (不忙、不打字、不跳、不庆祝、没睡) 才排; 一忙起来就清掉
   const busy = a.working || a.agents > 0
-  const calm = !busy && !a.hold && !a.typing && !a.celebrating && !a.sleeping && !(a.jumpAge >= 0 && a.jumpAge < JUMP_LANE)
+  const calm = !busy && !a.hold && !a.typing && !a.celebrating && !a.sleeping && (a.idleF ?? 0) < DOZE_FRAMES && !(a.jumpAge >= 0 && a.jumpAge < JUMP_LANE)
   if (!calm) {
     L.strollLeft = 0
     L.strollAt = -1
@@ -742,6 +1131,30 @@ export function laneStep(L: Lane, f: number, now: number, a: LaneAct, running: s
       L.strollAt = Number.MAX_SAFE_INTEGER // 走完再排下一次
     }
   }
+  // v1.4: 上一帧在睡 (打瞌睡 / 钻沙 / 戴睡帽), 这一帧有了动静 (来活、打字、鼠标停上来、慌张): 先蹦出来
+  if (L.waking > 0) L.waking -= 1
+  const next = poseNow(L, a)
+  const nap = next === 'doze' ? 'doze' : next === 'sleep' ? ((napOf(a.idleF ?? SLEEP_LANE + BURROW + CAP_DROP)?.stage === 'burrow' ? 'burrow' : 'cap') as WakeFrom) : ''
+  if (L.napping && !nap && L.rows === 3) {
+    L.wakeFrom = L.napping
+    L.wakeAt = f
+    L.waking = L.napping === 'doze' ? WAKE_DOZE : WAKE_DEEP
+    // 从沙里蹦出来: 沙子往八个方向炸开 (能飞进天空行)
+    if (L.napping !== 'doze') {
+      const burst: Array<[number, -1 | 0 | 1, -1 | 0 | 1]> = [
+        [-3, -1, -1],
+        [-1, -1, -1],
+        [1, 1, -1],
+        [3, 1, -1],
+        [5, 1, 0],
+        [-5, -1, 0],
+        [0, 0, -1],
+        [2, 0, -1],
+      ]
+      for (const [dx, vx, vy] of burst) addPt(L, L.hx + 12 + dx, 6, vx, vy, 5, COL.sand, true)
+    }
+  }
+  L.napping = nap
   const prev = L.pose
   const pose = lanePose(L, a)
   if (pose !== L.pose) {
@@ -882,6 +1295,8 @@ export function laneScene(L: Lane, f: number, a: LaneAct, pct: number): Scene {
     agents: 0,
     mood: a.md,
     sub: f,
+    sky: L.sky,
+    room: L.w - (L.bx + L.bw),
     bodyMix: bodyMixOf(L, f, { ...a, pct }),
     ...(!L.inGreet && f - L.greetEnd === 0 ? { arms: { R: 'mid' as Arm } } : {}),
   }
@@ -894,12 +1309,18 @@ export function laneScene(L: Lane, f: number, a: LaneAct, pct: number): Scene {
       return { ...base, low: true }
     case 'tool':
       // 停下来原地做这个工具的动作, 道具画在右边 3 列 (和面板一样)
-      return { ...base, working: true, kind: a.tool || 'other' }
+      return { ...base, working: true, kind: a.tool || 'other', toolAge: a.toolAge, endAge: a.endAge, ok: a.ok, hits: a.hits }
     case 'walk':
       // 走路: 腿交替、上下颠, 眼睛看走的方向; 不画道具 ("派子代理" 那种空手的样子)
       return { ...base, working: true, kind: 'agent', look: L.dir }
-    case 'sleep':
-      return { ...base, sleeping: true }
+    case 'sleep': {
+      const n = napOf(a.idleF ?? SLEEP_LANE + BURROW + CAP_DROP + 40)
+      return { ...base, sleeping: true, ...(n && L.rows === 3 ? { nap: n } : {}) }
+    }
+    case 'doze':
+      return { ...base, nap: napOf(a.idleF ?? DOZE_FRAMES) ?? { stage: 'doze', s: 0 } }
+    case 'wake':
+      return { ...base, nap: { stage: 'wake', s: f - L.wakeAt, from: L.wakeFrom || 'doze' } }
     default:
       // 闲着: 眨眼 / 张望 / 偶尔挥手 / 悠闲戴墨镜 / 慌张举钳 "!" 都是面板那套; 溜达完东张西望
       // 指针在横栏别处时眼睛看过去
@@ -911,7 +1332,7 @@ export function laneScene(L: Lane, f: number, a: LaneAct, pct: number): Scene {
 // 画大螃蟹 (不含粒子); f = 散步道的帧. 走路时腿跟着步子 (walkFrame), 其余动作按 150ms 的节奏 (和以前一样快)
 //   3 行版: 面板那只 (scenePx 15x6: 螃蟹 12 + 道具区 3), 逐像素拷到 bx; greet = 悬停时的举钳打招呼 (12x6, 静止的一张)
 //   2 行版: BIG2 字符画 (用工具时站着, 两只钳子轮流敲); 1 行版: 面板精简版那只 (miniPx 8x2, 带墨镜 / 汗滴 / 慌张眼睛)
-export function drawLaneBig(p: Px, L: Lane, f: number, a: LaneAct, pct: number, greetOnly = false, ox = 0): number {
+export function drawLaneBig(p: Px, L: Lane, f: number, a: LaneAct, pct: number, greetOnly = false, ox = 0, over?: Over): number {
   const t = Math.floor(f / PER)
   const sf = L.pose === 'walk' ? walkFrame(L, f, a) : t // 交给 scenePx / miniPx 的帧号
   const greet = greetOnly || L.pose === 'greet'
@@ -929,7 +1350,10 @@ export function drawLaneBig(p: Px, L: Lane, f: number, a: LaneAct, pct: number, 
       drawCrab(p, { bob: leap.bob, legs: leap.legs ? 0 : -1, eyes: 'open', look: 0, armL: leap.arms, armR: leap.arms, body, squash: leap.squash }, ox)
       return leap.lift
     }
-    blit(scenePx(laneScene(L, f, a, pct), sf), ox)
+    blit(scenePx(laneScene(L, f, a, pct), sf, over), ox)
+    // v1.4 从沙里蹦出来: 第 1-4 帧抬高 1/2/2/1 像素 (进天空行)
+    const w = f - L.wakeAt
+    if (L.pose === 'wake' && L.wakeFrom !== 'doze' && w >= 1 && w <= 4) return -([1, 2, 2, 1][w - 1] ?? 0)
     return 0
   }
   if (L.rows === 1) {
@@ -1024,8 +1448,21 @@ export function lanePx(L: Lane, f: number, a: LaneAct, pct: number): Px {
     blitHalf(hp, q, k.hx + drift, top)
   }
   const big = canvas(L.bw, rows * 2)
-  const lift = drawLaneBig(big, L, f, a, pct)
+  const over: Over = [] // 大螃蟹画布外面的像素 (天空行、15 列以外): 改文件翻页、抓网页、雷达
+  const lift = drawLaneBig(big, L, f, a, pct, false, 0, over)
   blitHalf(hp, big, L.hx, top + lift)
+  for (const [x, y, c, half] of over) {
+    if (half) put(hp, L.hx + x, top + lift + y, c)
+    else blitHalf(hp, [[c]], L.hx + 2 * x, top + lift + y)
+  }
+  // v1.4 从沙里醒来: 地上的沙到第 12 帧才消失, 睡帽往右上方弹飞 (每帧右 2 上 1); 都不跟着螃蟹抬高, 螃蟹已经在做下一件事时也接着播
+  const w = f - L.wakeAt
+  if (rows === 3 && L.wakeFrom && L.wakeFrom !== 'doze' && w >= 1) {
+    if (w < 12) for (let x = 0; x < 12; x++) blitHalf(hp, [[COL.sand]], L.hx + 2 * x, top + 5)
+    if (L.wakeFrom === 'cap' && w < 16) nightcap((x, y, c) => blitHalf(hp, [[c]], L.hx + 2 * x, top + y), 3, false, 2 * w, -w)
+  }
+  // 天空行的字下面画一道暗一点的下划线 (在螃蟹区第一行的上半格)
+  for (const cap of captionOf(L, a)) if (cap.under) for (let x = 0; x < dw(cap.text); x++) blitHalf(hp, [[mix(cap.color, 0x121214, 0.55)]], 2 * (cap.x + x), top)
   // 跳起来 (身体进了天空行) 和庆祝时不甩
   if (rows === 3 && L.sky && a.md === 'panic' && lift === 0 && L.pose !== 'celebrate' && L.pose !== 'jump') {
     for (const [x, y] of PANIC_FLING[f % 8] ?? []) {
@@ -1034,6 +1471,39 @@ export function lanePx(L: Lane, f: number, a: LaneAct, pct: number): Px {
     }
   }
   return hp
+}
+
+// v1.4 天空行里写的字 (散步道 Client 写上去; lanePx 只画下划线): 抓网页的网址 (抓完变紫), 搜索的搜索词 / 结果链接
+//   x 是散步道的列; 只有 3 行版、有天空行、正在用这个工具时才写; 地方不够就截短, 太窄就不写
+export function captionOf(L: Lane, a: LaneAct): Array<{ x: number; text: string; color: number; under: boolean }> {
+  if (!L.sky || L.rows !== 3 || L.pose !== 'tool' || !a.arg) return []
+  if (a.tool === 'fetch') {
+    const x = L.bx + 16
+    if (L.w - x < 6) return []
+    const color = (a.endAge ?? -1) >= 0 && a.ok !== false ? COL.visited : COL.seaHi
+    return [{ x, text: clip(a.arg, L.w - x), color, under: true }]
+  }
+  if (a.tool === 'search') {
+    // 搜的时候每 2 帧打出一个字 (前面带「搜」), 打完后面 1-3 个点循环; 搜到了换成第一条结果链接 (蓝字下划线) 和「+还有几条」
+    const x = L.bx + 20
+    const room = L.w - x
+    if (room < 6) return []
+    const end = a.endAge ?? -1
+    if (end >= 0 && a.ok !== false && a.link) {
+      const link = clip(a.link, room)
+      const out = [{ x, text: link, color: COL.seaHi, under: true }]
+      const more = (a.hits ?? 1) - 1
+      const x2 = x + dw(link) + 1
+      if (more > 0 && x2 + 1 + String(more).length <= L.w) out.push({ x: x2, text: '+' + more, color: COL.termOld, under: false })
+      return out
+    }
+    const chars = [...((a.word ? a.word + ' ' : '') + a.arg)]
+    const age = a.toolAge ?? 0
+    const n = end >= 0 ? chars.length : Math.min(chars.length, age >> 1)
+    const dots = n === chars.length && end < 0 ? '.'.repeat(((age >> 2) % 3) + 1) : ''
+    return [{ x, text: clip(chars.slice(0, n).join('') + dots, room), color: COL.paper, under: false }]
+  }
+  return []
 }
 
 // 盲文点: (列, 行) -> 位
@@ -1123,12 +1593,13 @@ export function tipFit(v: string[], tipMin: number): (room: number) => string {
 
 // 气泡放在大螃蟹旁边: 右边地方大就放右边, 否则放左边; 只放第 0 行 (2/3 行版的小螃蟹在下面); 放不下就截短, 绝不压到螃蟹
 // text: 一句话 (放不下就截短), 或者 "给定宽度, 返回放得下的写法" 的函数 (悬停气泡用)
-export function bubbleSpot(L: Lane, text: string | ((room: number) => string)): { x: number; text: string } | undefined {
+// avoidRight (v1.4): 右边正摆着大道具 (抓网页的页面、搜索的雷达和字), 气泡放左边 (左边没地方就不放)
+export function bubbleSpot(L: Lane, text: string | ((room: number) => string), avoidRight = false): { x: number; text: string } | undefined {
   const fit = typeof text === 'string' ? (room: number) => clip(text, room) : text
   const rightX = L.bx + L.bw + 1
   const rightRoom = L.w - rightX
   const leftRoom = L.bx - 1
-  const useRight = rightRoom >= dw(fit(Infinity)) || rightRoom >= leftRoom
+  const useRight = !avoidRight && (rightRoom >= dw(fit(Infinity)) || rightRoom >= leftRoom)
   const room = useRight ? rightRoom : leftRoom
   if (room < 4) return undefined
   const t = fit(room)
@@ -1150,6 +1621,13 @@ type LanePreviewOpts = {
   sleeping?: boolean
   pct?: number | ((f: number) => number)
   tool?: ToolKind | '' | ((f: number) => ToolKind | '')
+  call?: (f: number) => number // v1.4: 第几次工具调用 (不给: 每次从没有工具到有工具算一次新的)
+  ok?: boolean // v1.4: 工具结束时成没成功 (默认成功)
+  arg?: string // v1.4: 工具的主要参数 (网址 / 搜索词)
+  link?: string // v1.4: 搜索结束时的第一条结果
+  hits?: number // v1.4: 搜到几条
+  word?: string // v1.4: 搜索词前面那个字
+  idle?: (f: number) => number // v1.4: 多少帧没有动静了 (给了就按它算睡觉的阶段; sleeping: true 当作早就睡着了)
   hold?: (f: number) => boolean
   fine?: boolean // true: 每个散步道帧 (75ms) 报告一次; 默认每 150ms 报告一次 (回调的帧号、jumpAt 都按报告的帧算)
 }
@@ -1158,21 +1636,38 @@ export function previewLane(o: LanePreviewOpts = {}) {
   const sky = !!o.sky
   const L = newLane(o.w ?? 80, rows, sky)
   const per = o.fine ? 1 : PER
-  const out: Array<{ px: Px; hpx: Px; hx: number; cells: string; pt: Particle[]; pose: LanePose; bx: number; dir: number; kids: Array<{ id: string; x: number; hx: number; y: number; state: string }>; gone: Array<{ id: string; x: number }>; hidden: number }> = []
+  const out: Array<{ px: Px; hpx: Px; hx: number; cells: string; pt: Particle[]; pose: LanePose; bx: number; dir: number; kids: Array<{ id: string; x: number; hx: number; y: number; state: string }>; gone: Array<{ id: string; x: number }>; hidden: number; caption: ReturnType<typeof captionOf> }> = []
   const at = (v: boolean | ((f: number) => boolean) | undefined, f: number, d: boolean) => (typeof v === 'function' ? v(f) : (v ?? d))
   const total = (o.frames ?? 60) * per
+  // 工具调用和散步道一样追踪 (结束后撑一会儿演收尾); 不给 call 时, 每次从没有工具到有工具算一次新的调用
+  const T = newToolTrack()
+  let autoSeq = 0
+  let before: ToolKind | '' = ''
   for (let lf = 0; lf < total; lf++) {
     const f = Math.floor(lf / per) // 报告用的帧号
     const running = o.running ? o.running(f) : []
+    const kind = typeof o.tool === 'function' ? o.tool(f) : (o.tool ?? '')
+    if (kind && !before) autoSeq += 1
+    before = kind
+    trackTool(T, lf, kind, o.call ? o.call(f) : autoSeq, o.ok ?? true)
+    const ta = toolAct(T, lf)
     const a: LaneAct = {
       working: at(o.working, f, true),
       agents: running.length,
       typing: o.typing ? o.typing(f) : false,
       celebrating: at(o.celebrating, f, false),
-      sleeping: !!o.sleeping,
+      sleeping: o.idle ? o.idle(f) >= SLEEP_LANE : !!o.sleeping,
+      idleF: o.idle ? o.idle(f) : o.sleeping ? SLEEP_LANE + 200 + lf : 0, // sleeping: 早就戴着睡帽睡着了, 一帧帧往下睡 (会呼吸)
       jumpAge: o.jumpAt === undefined ? -999 : lf - o.jumpAt * per,
       md: o.mood ?? 'normal',
-      tool: typeof o.tool === 'function' ? o.tool(f) : (o.tool ?? ''),
+      tool: ta.tool,
+      toolAge: ta.toolAge,
+      endAge: ta.endAge,
+      ok: ta.ok,
+      ...(o.arg !== undefined ? { arg: o.arg } : {}),
+      ...(o.link !== undefined ? { link: o.link } : {}),
+      ...(o.hits !== undefined ? { hits: o.hits } : {}),
+      ...(o.word !== undefined ? { word: o.word } : {}),
       hold: o.hold ? o.hold(f) : false,
       pct: typeof o.pct === 'function' ? o.pct(f) : (o.pct ?? 30),
     }
@@ -1192,6 +1687,7 @@ export function previewLane(o: LanePreviewOpts = {}) {
       kids: L.kids.map(k => ({ id: k.id, x: k.x, hx: k.hx, y: k.y, state: k.state })),
       gone: L.gone.map(k => ({ id: k.id, x: k.x })),
       hidden: L.hidden,
+      caption: captionOf(L, a),
     })
   }
   return {

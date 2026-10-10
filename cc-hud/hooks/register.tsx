@@ -1,5 +1,5 @@
 import type { Register } from 'claude-code'
-import { crabSvg, dashSvg, type DashData } from './desktop'
+import { crabSvg, dashSvg, END_HOLD, END_HOLD_MS, type CrabKind, type DashData } from './desktop'
 import {
   FRAME_MS,
   LANE_MS,
@@ -15,6 +15,7 @@ import {
   clip,
   encode,
   scenePx,
+  scenePxAll,
   miniPx,
   type Mood,
   type ToolKind,
@@ -141,6 +142,25 @@ let lastTurnTools = 0
 let turnTools = 0
 let totalTools = 0
 let currentTool = ''
+let toolSeq = 0 // v1.4: 主会话第几次工具调用 (散步道认得出连着的两次)
+let toolEnd: { seq: number; ok: boolean; link?: string; hits?: number } = { seq: 0, ok: true } // v1.4: 最近结束的那次和成没成功 (散步道演收尾: 跑完变绿之类); 搜索带第一条结果和条数
+// v1.4 (第 14 项): 客户端的螃蟹按时间演 (它约 15 秒才重画一次, 动画由 SVG 自己按时间排): 这次工具什么时候开始、上次什么时候结束、是哪种
+let toolAt = 0
+let endAt = 0
+let endKind = ''
+let typeAt = 0 // 最后一次打字 (客户端低头 1.5 秒)
+let deskNap: '' | 'doze' | 'sand' = '' // 客户端上次画的是不是在睡; 从睡变醒那一下记下来演醒来
+let deskWakeAt = 0
+let deskWakeFrom: 'doze' | 'sand' = 'doze'
+const DOZE_AFTER_MS = 4 * 60_000 // 闲 4 分钟打瞌睡 (和终端一样)
+let toolArg = '' // v1.4: 最近一次主会话工具的主要参数 (抓网页的网址去掉协议、搜索词), 散步道写在天空行
+const noScheme = (u: unknown) => String(u ?? '').replace(/^[a-z][a-z0-9+.-]*:\/\//i, '')
+// 搜索结果: 第一条结果的网址 (去掉协议) 和一共几条 (results 里有的是一段段文字, 不算)
+function searchHits(result: any): { link?: string; hits: number } {
+  const items = (Array.isArray(result?.results) ? result.results : []).flatMap((r: any) => (Array.isArray(r?.content) ? r.content : []))
+  const first = items.find((c: any) => typeof c?.url === 'string')
+  return { ...(first ? { link: noScheme(first.url) } : {}), hits: items.length }
+}
 let toolCounts: Record<string, number> = {}
 let effort = ''
 let modelId = ''
@@ -359,6 +379,51 @@ export function paceOf(l: Limit | undefined, now: number): Pace | undefined {
   return { pct, ratio, runOutIn, resetIn, elapsedFrac, willRunOut: runOutIn < resetIn && ratio >= PACE_WARN }
 }
 
+// v1.4 (清单第 4 项): 工具栏上的「今天用了多少 · 每天能用多少」
+//   今天的起点 = 今天第一次看到的本周用量, 存在 store 的 'paceDay' (同一天开的几个会话共用); 换了一天 / 本周额度重置了就重新记
+//   每天能用 = 起点时剩下的 ÷ 从今天 0 点到重置还有几天 (算上今天, 至少 1 天), 一天之内不变; 今天用了 = 现在 - 起点
+//   今天用了超过每天能用 -> 工具栏上今天的数字变橙色, 螃蟹至少冒汗 (整周算下来还没超速时也一样)
+export type DayShare = { today: number; daily: number; over: boolean }
+const DAY_MS = 86_400_000
+export function dayShare(start: number, pct: number, resetsAt: number, dayStart: number): DayShare {
+  const days = Math.max(1, (resetsAt - dayStart) / DAY_MS)
+  const daily = Math.max(0, 100 - start) / days
+  const today = Math.max(0, pct - start)
+  return { today, daily, over: today > daily }
+}
+type PaceDay = { day: string; start: number; resetsAt: string }
+let paceDay: PaceDay | undefined
+const SAME_WINDOW_MS = 6 * 3600_000 // 重置时间差几个小时以内算同一个窗口 (防读数抖动); 额度重置时它会跳一整周
+function localDay(t: number): { key: string; start: number } {
+  const d = new Date(t)
+  return { key: `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`, start: new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime() }
+}
+// 这个起点能不能接着用: 是今天的、同一个窗口、用量没有掉下去 (掉下去 = 重置过)
+function paceDayFits(p: any, key: string, week: Limit, at: number): p is PaceDay {
+  return !!p && p.day === key && typeof p.start === 'number' && typeof p.resetsAt === 'string' && Math.abs(Date.parse(p.resetsAt) - at) < SAME_WINDOW_MS && week.percentUsed >= p.start - 1
+}
+async function dayShareNow($: any, week: Limit | undefined, now: number): Promise<DayShare | undefined> {
+  if (!week || typeof week.percentUsed !== 'number' || !week.resetsAt) return undefined
+  const at = Date.parse(week.resetsAt)
+  if (!isFinite(at)) return undefined
+  const { key, start } = localDay(now)
+  if (!paceDayFits(paceDay, key, week, at)) {
+    // 记的不能用了 (新会话 / 重新加载 / 换了一天): 先看别的会话今天是不是已经记过
+    let stored: unknown
+    try {
+      stored = await $.store.get('paceDay')
+    } catch {}
+    if (paceDayFits(stored, key, week, at)) paceDay = stored
+    else {
+      paceDay = { day: key, start: week.percentUsed, resetsAt: week.resetsAt }
+      try {
+        await $.store.set('paceDay', paceDay)
+      } catch {}
+    }
+  }
+  return dayShare(paceDay!.start, week.percentUsed, at, start)
+}
+
 const MOOD_RANK: Record<Mood, number> = { chill: 0, normal: 1, sweat: 2, panic: 3 }
 function moodOne(p: Pace | undefined): Mood | undefined {
   if (!p) return undefined
@@ -367,6 +432,10 @@ function moodOne(p: Pace | undefined): Mood | undefined {
   if (p.ratio >= 1.2 || p.willRunOut) return 'sweat'
   if (p.ratio < 0.8) return 'chill'
   return 'normal'
+}
+// 今天用超了: 至少冒汗 (已经慌张的照旧)
+function withDayShare(m: Mood, d: DayShare | undefined): Mood {
+  return d?.over && MOOD_RANK[m] < MOOD_RANK.sweat ? 'sweat' : m
 }
 // 5小时 和 本周 里更紧张的那个; 两个都没有读数 (不是订阅账号) 就是 正常
 export function moodOf(...paces: Array<Pace | undefined>): Mood {
@@ -435,7 +504,8 @@ function toolKind(t: string): ToolKind {
   if (/^(Read|Grep|Glob|LS|NotebookRead)$/.test(t)) return 'read'
   if (/^(Edit|Write|MultiEdit|NotebookEdit)$/.test(t)) return 'edit'
   if (/^(Bash|PowerShell|BashOutput|KillShell|Monitor)$/.test(t)) return 'bash'
-  if (/^(WebSearch|WebFetch)$/.test(t)) return 'web'
+  if (t === 'WebSearch') return 'search' // v1.4: 上网拆成两种 (螃蟹的动作不一样)
+  if (t === 'WebFetch') return 'fetch'
   if (/^(Agent|Task|SendMessage)$/.test(t)) return 'agent'
   return 'other'
 }
@@ -1490,7 +1560,8 @@ async function snapshot($: any, working: boolean) {
   const week = limits.find(l => l.kind === 'seven_day')
   const p5 = paceOf(five, now)
   const pw = paceOf(week, now)
-  mood = moodOf(p5, pw)
+  const ds = await dayShareNow($, week, now)
+  mood = withDayShare(moodOf(p5, pw), ds)
   const scene: Scene = {
     working,
     kind: toolKind(currentTool),
@@ -1500,7 +1571,7 @@ async function snapshot($: any, working: boolean) {
     agents: agentsNow,
     mood,
   }
-  return { now, u, ctxWindow, ctxTokens, pct, five, week, p5, pw, scene, tk: tokSum() }
+  return { now, u, ctxWindow, ctxTokens, pct, five, week, p5, pw, ds, scene, tk: tokSum() }
 }
 
 // ---------------- 客户端 (桌面 app) 版 ----------------
@@ -1568,11 +1639,28 @@ async function buildDesktop($: any, els: any, cols: number, working: boolean) {
     deskHeat = heat2
   }
   const jumped = s.now - jumpAtMs
+  // v1.4: 闲 4 分钟打瞌睡、5 分钟钻沙 (和终端一样按最后一次有动静算; 慌张不睡); 从睡变醒记下来, 演 1 秒醒来
+  const idle = !working && agentsNow === 0 && lastBusyAt > 0 ? s.now - lastBusyAt : 0
+  const nap = mood === 'panic' || sc.celebrating ? '' : idle >= SLEEP_AFTER_MS ? 'sand' : idle >= DOZE_AFTER_MS ? 'doze' : ''
+  if (nap !== deskNap) {
+    if (!nap && deskNap) {
+      deskWakeAt = s.now
+      deskWakeFrom = deskNap
+    }
+    deskNap = nap
+  }
+  const endMs = endAt ? s.now - endAt : Infinity
   const crab = crabSvg(
     {
       // 慌张会把睡着的螃蟹叫醒 (和终端版同一套优先级)
-      mode: sc.celebrating ? 'celebrate' : working ? 'work' : sc.sleeping && mood !== 'panic' ? 'sleep' : 'idle',
+      mode: sc.celebrating ? 'celebrate' : working ? 'work' : nap === 'sand' ? 'sleep' : 'idle',
       kind: sc.kind,
+      ...(currentTool && toolAt ? { toolMs: Math.min(15_000, s.now - toolAt) } : {}),
+      ...(!currentTool && endKind && endMs < (END_HOLD_MS[endKind as CrabKind] ?? END_HOLD) ? { end: { kind: endKind as CrabKind, ok: toolEnd.ok, ms: endMs, ...(toolEnd.hits !== undefined ? { hits: toolEnd.hits } : {}) } } : {}),
+      ...(nap === 'doze' ? { doze: true } : {}),
+      ...(nap === 'sand' && idle - SLEEP_AFTER_MS < 2400 ? { sleepMs: idle - SLEEP_AFTER_MS } : {}),
+      ...(deskWakeAt && s.now - deskWakeAt < 1000 ? { wake: { from: deskWakeFrom, ms: s.now - deskWakeAt } } : {}),
+      ...(typeAt && s.now - typeAt < 1500 ? { typing: true } : {}),
       heat,
       agents: Math.min(3, agentsNow),
       mood,
@@ -1587,7 +1675,7 @@ async function buildDesktop($: any, els: any, cols: number, working: boolean) {
   // v1.1: 卡片上面一行是工具栏 (原生按钮 / 下拉框); 螃蟹设成关时卡片里只放仪表盘
   return (
     <Box key="hud-d" flexDirection="column" rowGap={1}>
-      {deskToolbar($, els, s.pct)}
+      {deskToolbar($, els, s.pct, s.ds)}
       <Box key="hud-d-row" flexDirection="row" alignItems="center" columnGap={2}>
         {crabOn ? (
           <Box key="hud-d-crab" flexShrink={0}>
@@ -1608,8 +1696,8 @@ async function buildDesktop($: any, els: any, cols: number, working: boolean) {
 //   [设置] [交接] ([打开交接文件])      点了设置: 后面接 语言 / 螃蟹 / 面板 三个下拉框 (精简时也在, 随时改回来)
 // 上下文 >= 85%: 交接用客户端的主按钮 (终端是橙色方括号); 写的时候不写秒数 (客户端面板约 15 秒才刷新一次)
 const cap1 = (s: string) => s.charAt(0).toUpperCase() + s.slice(1)
-function deskToolbar($: any, els: any, pct: number | undefined) {
-  const { Box, Button, Select } = els
+function deskToolbar($: any, els: any, pct: number | undefined, ds?: DayShare) {
+  const { Box, Button, Select, Text } = els
   const B = S().bar
   const hot = !handoffBusy && (pct ?? 0) >= HANDOFF_AT
   const items: any[] = [
@@ -1637,9 +1725,36 @@ function deskToolbar($: any, els: any, pct: number | undefined) {
       />,
     )
   }
+  // v1.4: 右边和终端一样: 今天用了多少 (完整的一句) + rc 绿点 (点了跑 /remote-control)
+  const right: any[] = []
+  if (ds)
+    right.push(
+      <Box key="d-share" flexDirection="row">
+        {shareSegs(ds, 'full').map((x, i) => (
+          <Text key={'d-share-' + i} color={x.c} bold={x.b ? true : undefined}>
+            {x.t}
+          </Text>
+        ))}
+      </Box>,
+    )
+  if (rcOn)
+    right.push(
+      <Box key="d-rc" flexDirection="row" alignItems="center" columnGap={1}>
+        <Text key="d-rc-dot" color={RC_GREEN}>
+          ●
+        </Text>
+        <Button key="btn-rc" label="rc" onPress={() => void openRc($)} />
+      </Box>,
+    )
   return (
     <Box key="hud-d-bar" flexDirection="row" alignItems="center" columnGap={1}>
       {items}
+      {right.length ? <Box key="d-gap" flexGrow={1} /> : null}
+      {right.length ? (
+        <Box key="d-right" flexDirection="row" alignItems="center" columnGap={2} flexShrink={0}>
+          {right}
+        </Box>
+      ) : null}
     </Box>
   )
 }
@@ -1674,7 +1789,8 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
   const week = limits.find(l => l.kind === 'seven_day')
   const p5 = paceOf(five, now)
   const pw = paceOf(week, now)
-  mood = moodOf(p5, pw)
+  const ds = await dayShareNow($, week, now)
+  mood = withDayShare(moodOf(p5, pw), ds)
   const scene: Scene = {
     working,
     kind: toolKind(currentTool),
@@ -1784,11 +1900,17 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
       prio: -1,
       parts: chips.flatMap((p, i) => [...(i ? [<Text key={'bar-sp' + i}> </Text>] : []), ...p.parts]),
     }
+    // v1.4: remote control 开着时, 按钮后面紧跟 rc 绿点 (和按钮一样优先)
+    const rc = isTerm && fullscreen && rcOn ? rcPiece($, els) : undefined
+    const rcSeg: Seg[] = rc ? [{ key: 'seg-rc', w: rc.w, prio: -1, parts: rc.parts }] : []
+    // v1.4: 今天用了多少 (简短的那种) 放最后, 最不优先: 位置够才放
+    const sp = ds ? sharePiece(els, ds, 'short') : undefined
+    const shareSeg: Seg[] = sp ? [{ key: 'seg-pace', w: sp.w, prio: 7, parts: sp.parts }] : []
     const inner = W - HPAD * 2
     return (
       <Box key="hud" flexDirection="column" paddingLeft={HPAD} paddingRight={HPAD}>
         <Box key="hud-line" flexDirection="row" columnGap={2} height={1}>
-          {fit([head, ...segs], inner, 2).map(s => cell(els, s.key, s.w, s.parts))}
+          {fit([head, ...rcSeg, ...segs, ...shareSeg], inner, 2).map(s => cell(els, s.key, s.w, s.parts))}
         </Box>
         {settingsOpen ? pieceRows(els, 'cg', settingsGroups($, els).map(p => ({ p, gap: 3 })), inner) : null}
       </Box>
@@ -1954,7 +2076,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     <Box key="hud" flexDirection="row" columnGap={isTerm ? 0 : 2} paddingLeft={marginL} paddingRight={marginR}>
       {sprite}
       <Box key="info" flexDirection="column" width={A} flexShrink={0}>
-        {toolbarRows($, els, A, pct, now, fullscreen)}
+        {toolbarRows($, els, A, pct, now, fullscreen, ds)}
         {gridRow('r1', rows[0])}
         {gridRow('r2', rows[1])}
         {gridRow('r3', rows[2])}
@@ -1975,6 +2097,41 @@ let handoffAt = 0 // 开始写的时间 (按钮上显示已经写了多久)
 let lastHandoff = '' // 最近一次存好的交接文件 (客户端复制不了剪贴板: 工具栏多一个「打开交接文件」)
 let clearReady: HandoffNext | undefined // 这个会话 (这段对话) 写好的交接: 终端的 [交接] 后面出现 [清空并继续]; 新会话 / 清空 / 恢复时作废
 let saidHandoff = false // 上下文到 HANDOFF_AT 时螃蟹问过一次 "要交接吗"
+
+// v1.4: remote control 的 rc 绿点, 在工具栏第一行最右边 (精简版: 紧跟在按钮后面); 只在全屏的终端画
+//   全屏时 Claude Code 把 /rc 画在顶部 logo 的路径后面, 对话一长就滚上去了; 普通画面它自己会在右下角画 /rc, 这里不重复
+//   mod 读不到 remote control 的状态, 只能看你跑的 /remote-control (2.1.296 实测):
+//   - 跑完 -> 开着. 打开时不打印输出行; 开着时再跑, 窗口里选「继续」或按 Esc 也不打印
+//   - 跑完 RC_OUT_MS 内画出 remote-control 的输出行 -> 关 (选「断开」打印 "Remote Control disconnected."; 实测在跑完约 50ms 后画出)
+//   - /clear 以后 remote control 还开着, 这里也不清
+//   读不到的: 中途断线 / 重连; 设置 remoteControlAtStartup 开机自动开的
+const RC_OUT_MS = 2000
+const RC_GREEN = '#4ade80'
+let rcOn = false
+let rcOutUntil = 0 // 这个时刻以前画出来的 remote-control 输出行才算数: 之后滚动时旧的那行会重画, 不能当成刚断开
+
+function rcPiece($: any, els: any): Piece {
+  const { Text, Button } = els
+  return {
+    w: 4,
+    parts: [
+      <Text key="rc-dot" color={RC_GREEN}>
+        ●
+      </Text>,
+      <Text key="rc-sp"> </Text>,
+      // 点了跑 /remote-control: 弹出 Claude Code 自己的窗口 (会话链接、二维码、断开); 读不到链接, 靠它补上
+      <Button key="btn-rc" label="rc" plain onPress={() => void openRc($)} />,
+    ],
+  }
+}
+async function openRc($: any) {
+  if (!(await pressOk($, 'rc'))) return
+  try {
+    await $.command.run({ command: 'remote-control' })
+  } catch (err) {
+    $.ui.toast(S().toast.cmdFailed('remote-control', String(err)))
+  }
+}
 
 type Piece = { w: number; parts: any[] }
 function chip(els: any, key: string, btnKey: string, text: string, onPress: (press?: any) => void, hot: boolean, bright: boolean): Piece {
@@ -2022,7 +2179,7 @@ function group(els: any, key: string, name: string, opts: Piece[]): Piece {
 }
 
 // fullscreen = false: 普通画面, 终端不把鼠标点击交给 Claude Code, 按钮点不动 -> 两个按钮后面放一句暗色提示 (同一行放得下才放)
-function toolbarRows($: any, els: any, width: number, pct: number | undefined, now: number, fullscreen = true): any[] {
+function toolbarRows($: any, els: any, width: number, pct: number | undefined, now: number, fullscreen = true, ds?: DayShare): any[] {
   const { Box, Text } = els
   const B = S().bar
   // v1.3: 工具栏多一个 [历史]. 一行的精简版里不放 (位置太紧); 普通画面 (不是全屏) 也不放: 点不动, 把位置让给提示
@@ -2046,8 +2203,50 @@ function toolbarRows($: any, els: any, width: number, pct: number | undefined, n
         gap: 3,
       })
   }
+  // v1.4: 第一行最右边: 今天用了多少 (放得下最长的那种才放, 依次缩短; 点开 [设置] 时让给设置那几组) + rc 绿点
+  const rc = fullscreen && rcOn ? rcPiece($, els) : undefined
+  const left = items.reduce((w, it, i) => w + it.p.w + (i ? it.gap : 0), 0)
+  const room = width - left - 3 - (rc ? rc.w + 3 : 0)
+  const share = ds && !settingsOpen ? SHARE_FORMS.map(f => sharePiece(els, ds, f)).find(p => p.w <= room) : undefined
   if (settingsOpen) for (const p of settingsGroups($, els)) items.push({ p, gap: 3 })
-  return pieceRows(els, 'tb', items, width)
+  return pieceRows(els, 'tb', items, width, joinTail(els, share, rc))
+}
+
+// 今天用了多少的三种写法: today 21% · 20%/day (今天用了 21% · 每天能用 20%) / today 21/20% / 21/20%
+//   数字: 今天的平时白色, 用超了橙色; 每天能用的白色; 其余暗色. 10 以下留一位小数 (每天 1.6% 这种)
+const SHARE_FORMS = ['full', 'short', 'tiny'] as const
+const OVER = '#fb923c' // 和 xhigh 档位同一个橙色
+const shareNum = (v: number) => String(v < 10 ? Math.round(v * 10) / 10 : Math.round(v))
+function shareSegs(d: DayShare, form: (typeof SHARE_FORMS)[number]): Array<{ t: string; c: string; b?: boolean }> {
+  const P = S().share
+  const c = d.over ? OVER : VALUE
+  const t = shareNum(d.today)
+  const n = shareNum(d.daily)
+  const segs =
+    form === 'full'
+      ? [{ t: P.today, c: DIM }, { t: t + '%', c, b: true }, { t: ' · ', c: DIM }, { t: P.perDayPre, c: DIM }, { t: n + '%', c: VALUE }, { t: P.perDaySuf, c: DIM }]
+      : form === 'short'
+        ? [{ t: P.short, c: DIM }, { t, c, b: true }, { t: '/' + n + '%', c: DIM }]
+        : [{ t, c, b: true }, { t: '/' + n + '%', c: DIM }]
+  return segs.filter(x => x.t)
+}
+function sharePiece(els: any, d: DayShare, form: (typeof SHARE_FORMS)[number]): Piece {
+  const { Text } = els
+  const segs = shareSegs(d, form)
+  return {
+    w: segs.reduce((w, x) => w + dw(x.t), 0),
+    parts: segs.map((x, i) => (
+      <Text key={'share-' + i} color={x.c} bold={x.b ? true : undefined}>
+        {x.t}
+      </Text>
+    )),
+  }
+}
+// 两块靠右的东西拼成一块, 中间空 3 格
+function joinTail(els: any, a?: Piece, b?: Piece): Piece | undefined {
+  if (!a || !b) return a ?? b
+  const { Text } = els
+  return { w: a.w + 3 + b.w, parts: [...a.parts, <Text key="tail-gap">{'   '}</Text>, ...b.parts] }
 }
 
 // [设置] [交接] 两个按钮 (工具栏和一行版共用); 上下文 >= 85% 时 [交接] 的方括号变橙色
@@ -2103,15 +2302,18 @@ function settingsGroups($: any, els: any): Piece[] {
 }
 
 // 一串小块排成几行 (行的 key: prefix + 第几行); gap = 和同一行前一块之间空几格, 放不下就换到下一行
-function pieceRows(els: any, prefix: string, items: Array<{ p: Piece; gap: number }>, width: number): any[] {
+//   tail: 靠右放在第一行最右边的一块 (v1.4 的 rc 绿点); 第一行给它让出位置, 和左边至少空 3 格
+function pieceRows(els: any, prefix: string, items: Array<{ p: Piece; gap: number }>, width: number, tail?: Piece): any[] {
   const { Box, Text } = els
   type Row = { w: number; items: Array<{ gap: number; p: Piece }> }
   let cur: Row = { w: 0, items: [] }
   const rows: Row[] = [cur]
+  let cap = tail ? width - tail.w - 3 : width
   for (const { p, gap } of items) {
-    if (cur.items.length && cur.w + gap + p.w > width) {
+    if (cur.items.length && cur.w + gap + p.w > cap) {
       cur = { w: 0, items: [] }
       rows.push(cur)
+      cap = width
     }
     const g = cur.items.length ? gap : 0
     cur.items.push({ gap: g, p })
@@ -2120,6 +2322,7 @@ function pieceRows(els: any, prefix: string, items: Array<{ p: Piece; gap: numbe
   return rows.map((r, i) => (
     <Box key={prefix + i} flexDirection="row" height={1}>
       {r.items.flatMap((it, k) => [...(it.gap ? [<Text key={prefix + i + '-g' + k}>{' '.repeat(it.gap)}</Text>] : []), ...it.p.parts])}
+      {i === 0 && tail ? [<Text key={prefix + '-tail-g'}>{' '.repeat(Math.max(1, width - r.w - tail.w))}</Text>, ...tail.parts] : null}
     </Box>
   ))
 }
@@ -2321,7 +2524,8 @@ async function walkwayView($: any, els: any, W: number, rows: Rows, sky: boolean
   const p5 = paceOf(five, now)
   const pw = paceOf(week, now)
   const pct: number | undefined = u.context?.percent
-  mood = moodOf(p5, pw)
+  const ds = await dayShareNow($, week, now)
+  mood = withDayShare(moodOf(p5, pw), ds)
   noteTalk(now, pct, [
     [five, p5],
     [week, pw],
@@ -2336,6 +2540,10 @@ async function walkwayView($: any, els: any, W: number, rows: Rows, sky: boolean
     mood,
     pct: pct ?? lastPct,
     tool: currentTool ? toolKind(currentTool) : '',
+    toolSeq,
+    toolEnd,
+    toolArg,
+    searchWord: S().searchWord,
     typeSeq,
     jumpSeq,
     celebSeq,
@@ -2574,7 +2782,7 @@ export function previewScene(tool: string, opts: PreviewOpts = {}) {
   for (let f = 0; f < (opts.frames ?? 24); f++) {
     frame = f
     const s = previewOne(tool, opts)
-    out.push(encode(scenePx(s, f), SPRITE_W, 3), encode(miniPx(s, f), MINI_W, 1))
+    out.push(encode(scenePxAll(s, f), SPRITE_W, 3), encode(miniPx(s, f), MINI_W, 1))
   }
   frame = 0
   return { label: toolLabel(tool), kind: toolKind(tool), frames: out }
@@ -2586,7 +2794,7 @@ export function previewPixels(tool: string, opts: PreviewOpts = {}) {
   for (let f = 0; f < (opts.frames ?? 24); f++) {
     frame = f
     const s = previewOne(tool, opts)
-    big.push(scenePx(s, f))
+    big.push(scenePxAll(s, f))
     mini.push(miniPx(s, f))
   }
   frame = 0
@@ -2705,6 +2913,22 @@ export const register: Register = on => {
     await $.store.set('layout', layout)
     redraw($)
     return { text: C().layout(C().layoutName[layout] ?? layout) }
+  })
+
+  // v1.4: 你跑的 /remote-control -> rc 绿点 (规则见 rcOn 那里)
+  on('command.run', { command: 'remote-control' }, async ($, e, next) => {
+    const result = await next(e)
+    rcOn = true
+    rcOutUntil = (await $.clock.now()) + RC_OUT_MS
+    redraw($)
+    return result
+  })
+  on('ui.render', { component: 'CommandOutput' }, async ($, e, next) => {
+    if (e.props.command === 'remote-control' && (await $.clock.now()) < rcOutUntil) {
+      rcOn = false
+      redraw($)
+    }
+    return next(e)
   })
 
   // 换模型 / 换档位后马上刷新
@@ -2874,7 +3098,11 @@ export const register: Register = on => {
     if (!e.agentId) {
       turnTools += 1
       currentTool = e.tool
+      toolSeq += 1
+      toolAt = await $.clock.now()
+      toolArg = e.tool === 'WebFetch' ? noScheme((e as any).url) : e.tool === 'WebSearch' ? String((e as any).query ?? '') : ''
     }
+    const seq = toolSeq
     totalTools += 1
     toolCounts[e.tool] = (toolCounts[e.tool] ?? 0) + 1
     // 收据: 主线程一轮进行中, 所有线程 (含子代理) 的工具都算这一轮的
@@ -2910,7 +3138,13 @@ export const register: Register = on => {
       ran = await next(e)
       return ran
     } finally {
-      if (!e.agentId) currentTool = '' // (工具刚结束时散步道的螃蟹还会多做 4 帧动作, 在模块里算)
+      if (!e.agentId) {
+        currentTool = '' // (工具刚结束时散步道的螃蟹还会撑 600ms 演收尾, 在模块里算)
+        const ok = !!ran && !ran.deny && !ran.isError
+        toolEnd = { seq, ok, ...(ok && e.tool === 'WebSearch' ? searchHits(ran.result) : {}) }
+        endAt = await $.clock.now()
+        endKind = toolKind(String(e.tool))
+      }
       if (kid) kid.lastAt = await $.clock.now()
       // 改文件只算真的改成了的 (没被拒、没报错)
       const edited = ran && !ran.deny && !ran.isError && toolKind(String(e.tool)) === 'edit'
@@ -3029,6 +3263,7 @@ export const register: Register = on => {
   on('prompt.edit', async ($, e, next) => {
     const now = await $.clock.now()
     typeSeq += 1
+    typeAt = now
     lastBusyAt = now
     if (now - typePushedAt > 400 && crabOn && layout !== 'off') {
       typePushedAt = now

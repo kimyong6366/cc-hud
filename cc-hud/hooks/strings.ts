@@ -51,6 +51,8 @@ const zh = {
   noTools: '还没有',
   counting: '统计中..',
   sinceLaunch: ' 本次启动',
+  // v1.4: 工具栏上的「今天用了 21% · 每天能用 20%」(颜色分段画, 所以拆开); short = 位置不够时的「今天 21/20%」
+  share: { today: '今天用了 ', perDayPre: '每天能用 ', perDaySuf: '', short: '今天 ' },
   // 客户端卡片
   desk: {
     runOut: (d: string) => d + ' 用完',
@@ -84,6 +86,8 @@ const zh = {
     clickHint: '点击需要 /tui fullscreen，也可以输入 /hud handoff',
     clickHintShort: '点击需要 /tui fullscreen',
   },
+  // v1.4 散步道天空行: 搜索词前面那个字
+  searchWord: '搜',
   // 散步道气泡 (外面会套上「」)
   say: {
     done: (d: string) => '搞定 ' + d,
@@ -236,6 +240,7 @@ const en: Table = {
   noTools: 'none yet',
   counting: 'counting..',
   sinceLaunch: ' since launch',
+  share: { today: 'today ', perDayPre: '', perDaySuf: '/day', short: 'today ' },
   desk: {
     runOut: (d: string) => 'out ' + d,
     kidsTail: (n: string) => '  +' + n + (n === '1' ? ' subagent' : ' subagents'),
@@ -263,6 +268,7 @@ const en: Table = {
     clickHint: 'clicks need /tui fullscreen, or type /hud handoff',
     clickHintShort: 'clicks need /tui fullscreen',
   },
+  searchWord: 'search',
   say: {
     done: (d: string) => 'Done ' + d,
     quotaBack: "Quota's back",
