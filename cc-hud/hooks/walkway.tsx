@@ -3,6 +3,7 @@
 // hooks (register.tsx) 只把处境当 props 传进来: 忙不忙、心情、当前工具、上下文 %、运行中的子代理、事件气泡、
 //   打字 / 发送 / 庆祝的序号、多久没动静了、悬停时的用量摘要和小贴士; 以及宽度、行数、有没有天空行
 // 模块自己用帧钟 (surface.every, 75ms 一帧; v0.19 起走路半格一步) 推进: 走路、排队、粒子、气泡几秒后消失、5 分钟睡着、工具刚结束再撑 4 帧
+//   (v1.4.1: 戴着睡帽睡熟以后每 6 帧才画一次, 中间的帧照样算; 一有动静马上回到每帧画)
 // 鼠标停在大螃蟹上 (只有全屏模式有指针事件): 大螃蟹立刻停下举钳, 队伍也停; 气泡在停下那一刻定好位置和全文;
 //   指针离开约 0.5 秒后接着走; 指针在横栏别处时, 闲着的螃蟹眼睛看过去. 点击不做任何事 (点一下 Client 会拿走键盘焦点)
 // 终端的 Client 里没有 Raster: 半格像素画成 Text (上像素当 color, 下像素当 backgroundColor), 同色的连续格子合成一段
@@ -23,6 +24,7 @@ import {
   laneFit,
   laneStep,
   lanePose,
+  napOf,
   lanePx,
   laneCells,
   bubbleSpot,
@@ -188,47 +190,81 @@ function start(p: WalkProps): St {
   }
 }
 
+// v1.4.1 睡熟了 (戴着睡帽睡、没有气泡、鼠标不在、没有子代理): 每 NAP_EVERY 帧才画一次.
+//   中间的帧照样一帧帧算 (泡泡、呼吸、偷看的时间不变), 只是少画几次; 一有动静 (新 props、鼠标) 马上回到每帧画
+const NAP_EVERY = 6
+type Pace = { every: number; stop: () => void; key: string }
+const paces = new WeakMap<object, Pace>()
+// 新 props 里会叫醒螃蟹的东西 (变了就马上回到每帧画, 不等慢帧钟)
+const wakeKey = (p: WalkProps) => [p.typeSeq, p.jumpSeq, p.celebSeq, p.toolSeq, p.toolEnd.seq, p.say?.seq ?? 0, p.working, p.agents.length, p.mood, p.tool].join()
+
+function deepAsleep(st: St, p: WalkProps): boolean {
+  if (p.working || p.agents.length || st.hover || st.f < st.holdUntil || st.f < st.sayUntil) return false
+  if (st.L.pose !== 'sleep' || st.L.kids.length || st.L.gone.length) return false
+  return napOf(st.f - st.lastBusyF)?.stage === 'sleep'
+}
+
+// 一帧 (75ms) 的推进: 认新事件、跟工具、走一步; 不画
+function advance(st: St, p: WalkProps) {
+  st.f += 1
+  // 新事件 (按序号认): 打字 -> 低头 1.5 秒; 发送 -> 跳; 一轮结束 -> 庆祝; 新气泡 -> 显示约 5 秒
+  if (p.typeSeq !== st.typeSeq) {
+    st.typeSeq = p.typeSeq
+    st.typeUntil = st.f + TYPE_FRAMES
+    st.lastBusyF = st.f
+  }
+  if (p.jumpSeq !== st.jumpSeq) {
+    st.jumpSeq = p.jumpSeq
+    st.jumpAt = st.f
+    st.lastBusyF = st.f
+  }
+  if (p.celebSeq !== st.celebSeq) {
+    st.celebSeq = p.celebSeq
+    st.celebUntil = st.f + p.celebFrames
+  }
+  if (p.say && p.say.seq !== st.saySeq) {
+    st.saySeq = p.say.seq
+    st.sayUntil = st.f + SAY_FRAMES
+  }
+  if (p.working || p.agents.length) st.lastBusyF = st.f
+  trackTool(st.track, st.f, p.tool, p.toolSeq, p.toolEnd.seq === p.toolSeq ? p.toolEnd.ok : true)
+  if (!st.hover && st.f >= st.holdUntil) st.spot = undefined
+  laneFit(st.L, p.w, p.rows, p.sky)
+  laneStep(st.L, st.f, st.f * LANE_MS, actOf(st, p), p.agents)
+}
+
+function tick(surface: any) {
+  const st: St = surface.state
+  const p = live.get(surface)
+  if (!st || !p) return
+  const n = paces.get(surface)?.every ?? 1
+  for (let i = 0; i < n; i++) advance(st, p)
+  // 画面没变就不重画 (闲着、没有子代理、也没有气泡时, 只在眨眼之类的时候画)
+  const sig = JSON.stringify(view(st, p).map(segments))
+  if (sig !== st.sig) {
+    st.sig = sig
+    surface.setState({ ...st })
+  }
+  pace(surface, deepAsleep(st, p) ? NAP_EVERY : 1, wakeKey(p))
+}
+
+// 帧钟的快慢: 每 every 帧跳一次 (换快慢时换一个钟)
+function pace(surface: any, every: number, key: string) {
+  const c = paces.get(surface)
+  if (c && c.every === every) {
+    c.key = key
+    return
+  }
+  c?.stop()
+  paces.set(surface, { every, key, stop: surface.every(LANE_MS * every, () => tick(surface)) })
+}
+
 export default function Walkway(props: WalkProps, surface: any) {
   const { Box, Text } = surface.elements
   live.set(surface, props)
   if (surface.state === undefined) {
     surface.setState(start(props))
-    surface.every(LANE_MS, () => {
-      const st: St = surface.state
-      const p = live.get(surface)
-      if (!st || !p) return
-      st.f += 1
-      // 新事件 (按序号认): 打字 -> 低头 1.5 秒; 发送 -> 跳; 一轮结束 -> 庆祝; 新气泡 -> 显示约 5 秒
-      if (p.typeSeq !== st.typeSeq) {
-        st.typeSeq = p.typeSeq
-        st.typeUntil = st.f + TYPE_FRAMES
-        st.lastBusyF = st.f
-      }
-      if (p.jumpSeq !== st.jumpSeq) {
-        st.jumpSeq = p.jumpSeq
-        st.jumpAt = st.f
-        st.lastBusyF = st.f
-      }
-      if (p.celebSeq !== st.celebSeq) {
-        st.celebSeq = p.celebSeq
-        st.celebUntil = st.f + p.celebFrames
-      }
-      if (p.say && p.say.seq !== st.saySeq) {
-        st.saySeq = p.say.seq
-        st.sayUntil = st.f + SAY_FRAMES
-      }
-      if (p.working || p.agents.length) st.lastBusyF = st.f
-      trackTool(st.track, st.f, p.tool, p.toolSeq, p.toolEnd.seq === p.toolSeq ? p.toolEnd.ok : true)
-      if (!st.hover && st.f >= st.holdUntil) st.spot = undefined
-      laneFit(st.L, p.w, p.rows, p.sky)
-      laneStep(st.L, st.f, st.f * LANE_MS, actOf(st, p), p.agents)
-      // 画面没变就不重画 (闲着、没有子代理、也没有气泡时, 只在眨眼之类的时候画)
-      const sig = JSON.stringify(view(st, p).map(segments))
-      if (sig !== st.sig) {
-        st.sig = sig
-        surface.setState({ ...st })
-      }
-    })
+    pace(surface, 1, wakeKey(props))
     // 鼠标: 停在大螃蟹的格子上 -> 停下举钳 + 气泡; 离开 -> 约 0.5 秒后接着走; 按下 / 松开不理 (不做点击)
     surface.onPointer((e: any) => {
       const st: St = surface.state
@@ -253,8 +289,14 @@ export default function Walkway(props: WalkProps, surface: any) {
         }
         st.ptrX = e.x
       }
+      pace(surface, 1, wakeKey(p)) // v1.4.1: 睡熟时少画的帧钟马上回到每帧
       surface.setState({ ...st })
     })
+  } else {
+    // v1.4.1: 新 props 带来了动静 (打字、发消息、来活、新气泡、心情变了): 睡熟时少画的帧钟马上回到每帧
+    const c = paces.get(surface)
+    const key = wakeKey(props)
+    if (c && c.every > 1 && c.key !== key) pace(surface, 1, key)
   }
   const st: St = surface.state ?? start(props)
   laneFit(st.L, props.w, props.rows, props.sky)

@@ -1530,13 +1530,20 @@ function needsFrame(now: number): boolean {
     laneDirty = false
     return true
   }
-  if (engineWorking || tweening || agentsNow > 0 || lastPct >= 80 || mood === 'sweat' || mood === 'panic') return true
+  // 画面在动的时候每帧画: 干活 (状态格的均衡器、进度条的光) / 子代理 / 用量条补间 / 用量 >=90% 的条一明一暗 / 庆祝
+  if (engineWorking || tweening || agentsNow > 0 || pulsing) return true
   if (now < celebrateUntil + 2 * FRAME_MS) return true
-  if (lastActive > 0 && now - lastActive > SLEEP_AFTER_MS) return frame % 2 === 0
-  const cyc = frame % 160
-  if (frame % 30 <= 1) return true
-  if ((cyc >= 60 && cyc <= 77) || (cyc >= 120 && cyc <= 137)) return true
-  return frame % 13 === 0
+  // 写交接: 按钮上的秒数 (约 0.45 秒画一次)
+  if (handoffBusy && frame % 3 === 0) return true
+  // 打字时被 0.4 秒节流吞掉的最后几下: 补推一次, 螃蟹照样在最后一次按键后 1.5 秒才抬头
+  if (typePending && now - typePushedAt > 400) {
+    typePending = false
+    typePushedAt = now
+    return true
+  }
+  // v1.4.1: 其余时候 (闲着、睡着、冒汗、上下文 >=80%) 终端面板不随帧变 (v0.16 起面板不画螃蟹, 散步道在 Client 里自己动);
+  //   只为倒计时之类的文字每 15 秒刷一次. 以前这里按旧面板螃蟹的节奏每秒重画 2-7 次, 画出来一样, 每个闲着的会话白吃约 0.3 个核
+  return frame % 100 === 0
 }
 
 // ---------------- 画面 ----------------
@@ -1801,6 +1808,7 @@ async function buildView($: any, els: any, surface: string, W: number, working: 
     mood,
   }
   const pulse = (l?: { percentUsed: number }) => (l && l.percentUsed >= 90 ? 0.25 * (1 + Math.sin(frame / 2)) : 0)
+  pulsing = [five, week].some(l => (l?.percentUsed ?? 0) >= 90)
 
   const onModel = () => runSlash($, 'model')
   const onContext = () => runSlash($, 'context')
@@ -2437,6 +2445,8 @@ let crabOn = true // /hud crab 开关 (存进 store)
 let laneDirty = false // 散步道的 props 变了 (比如冒了新气泡), 下一帧推一次
 let typeSeq = 0 // 打字 (prompt.edit) 的序号: 模块见到新序号就低头 1.5 秒
 let typePushedAt = 0 // 上次为打字重画的时间 (连着打字时约 0.4 秒推一次)
+let typePending = false // v1.4.1: 有按键被节流吞掉还没推 (下一帧过了 0.4 秒就补推)
+let pulsing = false // v1.4.1: 面板上有用量 >=90% 的条在一明一暗 (要每帧画)
 let jumpSeq = 0 // 发出消息 (prompt.submit) 的序号: 模块见到新序号就跳一下
 let jumpAtMs = 0 // 发出消息的时间 (桌面版那一跳从这里算; 换图时接着播)
 let celebStartAt = 0 // 这次庆祝开始的时间 (桌面版连跳两下从这里算)
@@ -3265,9 +3275,12 @@ export const register: Register = on => {
     typeSeq += 1
     typeAt = now
     lastBusyAt = now
-    if (now - typePushedAt > 400 && crabOn && layout !== 'off') {
-      typePushedAt = now
-      redraw($)
+    if (crabOn && layout !== 'off') {
+      typePending = now - typePushedAt <= 400
+      if (!typePending) {
+        typePushedAt = now
+        redraw($)
+      }
     }
     return next(e)
   })

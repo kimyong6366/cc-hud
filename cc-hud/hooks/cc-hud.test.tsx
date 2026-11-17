@@ -4331,3 +4331,119 @@ test('in the real crab strip: a fetch writes its URL in the sky row (purple once
   expect(w.text[0]).toContain('+2')
   await ui.unmount()
 })
+
+// ---------------- 1.4.1 闲置 CPU ----------------
+// 闲着的终端会话: hooks 大约每 15 秒才重画一次面板 (PromptHint) 和散步道 (AbovePrompt); 散步道的动画在 Client 里自己走.
+//   以前闲着也每秒重画 2-7 次 (按 v0.16 以前面板螃蟹的节奏), 画出来的东西一样, 每个会话白吃约 0.3 个核
+// 数重画: 每次重画两处各读一次 $.session.usage; 另外额度提醒约每 6 秒读一次
+test('idle CPU: an idle terminal session redraws the panel and the crab strip only about every 15 s, awake, asleep, or sweating over a quota that will run out', { timeoutMs: 180_000 }, async ($, on) => {
+  const T = 1_900_000_000_000
+  const calm = { ...lowUsage(), rateLimits: [lim('five_hour', 10, T + 3 * H), lim('seven_day', 12, T + 3 * 24 * H)] }
+  let usage: any = calm
+  let reads = 0
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => [], usage: () => (reads++, usage) })
+  const hint = await mountHint($, 'terminal', 120)
+  const band = await mountAbove($, 120, 4)
+  await clock.advance(2000)
+  const minute = async () => {
+    reads = 0
+    await clock.advance(60_000)
+    return reads
+  }
+  const awake = await minute()
+  await clock.set(T + 5 * 60_000 + 30_000) // 5 分钟没有动静: 睡着了
+  const asleep = await minute()
+  // 5 小时窗口才过 2 小时就用了 60%: 会在重置前用完, 冒汗
+  usage = { ...calm, rateLimits: [lim('five_hour', 60, clock.now() + 3 * H), lim('seven_day', 12, T + 3 * 24 * H)] }
+  await clock.advance(20_000) // 用量变了: 下一次刷新看到, 用量条补间几帧 (那几帧照样每帧画), 冒一次「慢点」气泡
+  const sweat = await minute()
+  expect(((await band.find({ type: 'Client' })) as any)?.props.props.mood).toBe('sweat')
+  // 至多: 4 次定时刷新 x 2 处 + 约 10 次额度提醒 + 气泡之类的事件
+  expect([awake, asleep, sweat].map(n => (n <= 24 ? 'ok' : n))).toEqual(['ok', 'ok', 'ok'])
+  await hint.unmount()
+  await band.unmount()
+})
+
+test('idle CPU: what moves still redraws every frame: a running turn, a usage bar at 90% or more (it pulses), the handoff chip counting seconds', { timeoutMs: 60_000 }, async ($, on) => {
+  let clk: any
+  let usage: any = { ...lowUsage(), rateLimits: [lim('five_hour', 10, T0 + 3 * H), lim('seven_day', 12, T0 + 3 * 24 * H)] }
+  let reads = 0
+  const calls = await start($, on, WIN, { ...EN, mockClock: T0, agents: () => [], usage: () => (reads++, usage), fork: async () => (await clk.sleep(20_000), { isAnswered: true, text: 'BODY', usage: {} }) })
+  clk = calls.clock
+  const threeSeconds = async () => {
+    reads = 0
+    await clk.advance(3000)
+    return reads
+  }
+  // 主会话在跑: 状态格的均衡器、进度条的光每帧都在动
+  let ui = await mountHint($, 'terminal', 120, true)
+  await clk.advance(1000)
+  expect(await threeSeconds()).toBeGreaterThanOrEqual(15)
+  await ui.unmount()
+  // 闲着, 但本周用量 >= 90%: 用量条一明一暗
+  usage = { ...usage, rateLimits: [lim('five_hour', 10, T0 + 3 * H), lim('seven_day', 92, T0 + 3 * 24 * H)] }
+  ui = await mountHint($, 'terminal', 120)
+  await clk.advance(1000)
+  expect(await threeSeconds()).toBeGreaterThanOrEqual(15)
+  await ui.unmount()
+  // 写交接时按钮上的秒数照常走 (面板一直开着, 不重新挂)
+  usage = { ...usage, rateLimits: [lim('five_hour', 10, T0 + 3 * H), lim('seven_day', 12, T0 + 3 * 24 * H)] }
+  ui = await mountHint($, 'terminal', 140)
+  await clk.advance(1000)
+  await ui.press({ key: 'btn-handoff' })
+  await clk.advance(3000)
+  expect((await btn(ui, 'btn-handoff'))?.props.label).toBe('writing handoff... 3s')
+  await ui.unmount()
+})
+
+test('idle CPU: keys swallowed by the 0.4 s typing throttle still reach the crab strip on the next frames', async ($, on) => {
+  const T = 1_900_000_000_000
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => [], usage: lowUsage })
+  const band = await mountAbove($, 120, 4)
+  await clock.advance(2000)
+  const seq = async () => ((await band.find({ type: 'Client' })) as any)?.props.props.typeSeq
+  const typed = (text: string) => ($ as any).prompt.edit({ origin: { kind: 'composer' }, text, cursor: text.length, start: text.length - 1, end: text.length - 1, inputText: 'x' })
+  await typed('a')
+  await clock.settle()
+  const first = await seq()
+  await clock.advance(100)
+  await typed('ab')
+  await typed('abc')
+  await clock.advance(450)
+  expect(await seq()).toBe(first + 2)
+  await band.unmount()
+})
+
+// 方案 B (用户看了预览选 B-6): 戴着睡帽睡熟了 (没有气泡、鼠标不在、没有子代理), 散步道每 6 帧 (0.45 秒) 才画一次.
+//   中间的帧照样算 (泡泡、呼吸、偷看的时间不变), 画出来的每一张和以前同一帧的一样, 只是少画几张; 一有动静马上回到每帧画
+test('idle CPU (B): a crab sound asleep in its cap is drawn every 0.45 s instead of every 75 ms, still moving; typing wakes it at once', { timeoutMs: 60_000 }, async ($, on) => {
+  const T = 1_900_000_000_000
+  const { clock } = await start($, on, WIN, { mockClock: T, agents: () => [], usage: lowUsage })
+  const ui = await mountAbove($, 110, 4)
+  await ui.advance(5 * 60_000 + 10_000) // 5 分钟没有动静: 钻沙、戴上睡帽, 睡熟了
+  const sig = async () => JSON.stringify((await walkOf(ui)).rows)
+  // 每 75ms 看一次, ms 毫秒里画面换了几次
+  const changes = async (ms: number) => {
+    let n = 0
+    let last = await sig()
+    for (let t = 0; t < ms; t += 75) {
+      await ui.advance(75)
+      const s = await sig()
+      if (s !== last) n++
+      last = s
+    }
+    return n
+  }
+  const asleep = await changes(3000)
+  expect(asleep >= 4 && asleep <= 7 ? 'ok' : `${asleep} changes in 3 s`).toBe('ok') // 以前约 14 次
+  // 打字: 150ms 内醒 (睁眼低头), 不等慢帧钟
+  const lined = (px: number[][]) => px.some(r => r.some((c, i) => c === EYE && r[i + 1] === EYE && r[i + 4] === EYE && r[i + 5] === EYE))
+  expect(lined((await walkOf(ui)).px)).toBe(true)
+  await clock.advance(1000)
+  await ($ as any).prompt.edit({ origin: { kind: 'composer' }, text: 'a', cursor: 1, start: 0, end: 0, inputText: 'a' })
+  await ui.advance(150)
+  expect(lined((await walkOf(ui)).px)).toBe(false)
+  // 醒着 (低头打字、然后闲着) 照旧每帧画: 刚醒的 3 秒里画面换得比睡熟时多
+  expect(await changes(3000)).toBeGreaterThan(asleep)
+  await ui.unmount()
+})
